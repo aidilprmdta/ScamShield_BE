@@ -1,0 +1,70 @@
+[
+  {
+    "id": "phishing-otp-101",
+    "title": "Awas, Jangan Pernah Bagikan Kode OTP ke Siapa Pun",
+    "category": "Phishing",
+    "type": "article",
+    "thumbnailUrl": "https://placehold.co/600x400?text=OTP+Phishing",
+    "publishedAt": "2026-06-01T00:00:00+00:00",
+    "body": "Kode OTP (One-Time Password) adalah kunci terakhir untuk masuk ke akun atau menyetujui transaksi Anda. Bank, e-commerce, dan dompet digital resmi TIDAK PERNAH meminta kode OTP lewat telepon, chat, atau DM media sosial. Jika ada pihak yang mengaku 'petugas' meminta OTP dengan alasan verifikasi, hadiah, atau pemblokiran akun, itu hampir pasti penipuan. Segera tutup telepon/chat, jangan berikan kode apa pun, dan laporkan nomor tersebut."
+  },
+  {
+    "id": "qris-palsu-101",
+    "title": "Mengenal Modus QRIS Palsu yang Ditempel di Atas QRIS Asli",
+    "category": "QRIS Palsu",
+    "type": "article",
+    "thumbnailUrl": "https://placehold.co/600x400?text=QRIS+Palsu",
+    "publishedAt": "2026-06-05T00:00:00+00:00",
+    "body": "Pelaku menempelkan stiker QR code palsu di atas QRIS resmi milik pedagang, sehingga pembayaran pembeli masuk ke rekening pelaku, bukan pedagang. Sebelum memindai QRIS, periksa apakah stiker terlihat ditempel ulang (tidak rata/menggelembung), dan selalu cocokkan nama merchant yang muncul di layar pembayaran dengan nama toko sebelum menekan 'Bayar'."
+  },
+  {
+    "id": "investasi-bodong-101",
+    "title": "Ciri-Ciri Investasi Bodong yang Menjanjikan Untung Instan",
+    "category": "Investasi Bodong",
+    "type": "article",
+    "thumbnailUrl": "https://placehold.co/600x400?text=Investasi+Bodong",
+    "publishedAt": "2026-06-10T00:00:00+00:00",
+    "body": "Waspadai tawaran investasi yang menjanjikan keuntungan tetap dan sangat tinggi tanpa risiko, mengandalkan skema rekrut anggota baru (member get member), serta tidak memiliki izin resmi dari OJK. Selalu cek legalitas perusahaan investasi melalui kanal resmi OJK sebelum menyetorkan dana."
+  },
+  {
+    "id": "loker-palsu-101",
+    "title": "Waspada Lowongan Kerja Palsu yang Minta Bayar di Awal",
+    "category": "Loker Palsu",
+    "type": "article",
+    "thumbnailUrl": "https://placehold.co/600x400?text=Loker+Palsu",
+    "publishedAt": "2026-06-15T00:00:00+00:00",
+    "body": "Perusahaan resmi tidak pernah meminta calon karyawan membayar biaya administrasi, pelatihan, atau seragam di awal proses rekrutmen sebagai syarat diterima kerja. Jika ada permintaan transfer uang sebelum tanda tangan kontrak resmi, besar kemungkinan itu penipuan loker."
+  },
+  {
+    "id": "kuis-kenali-modus-scam",
+    "title": "Kuis: Seberapa Jeli Kamu Mengenali Modus Penipuan?",
+    "category": "Rekayasa Sosial",
+    "type": "quiz",
+    "thumbnailUrl": "https://placehold.co/600x400?text=Kuis+Scam",
+    "publishedAt": "2026-06-20T00:00:00+00:00",
+    "quizQuestions": [
+      {
+        "question": "Anda menerima SMS: 'Selamat! Nomor Anda memenangkan undian Rp50.000.000. Klik link untuk klaim.' Apa yang sebaiknya dilakukan?",
+        "options": [
+          "Klik link dan isi data pribadi",
+          "Abaikan dan hapus pesan, jangan klik apa pun",
+          "Balas SMS untuk konfirmasi data",
+          "Teruskan ke teman agar ikut klaim"
+        ],
+        "correctIndex": 1,
+        "explanation": "Undian dadakan tanpa Anda pernah mengikuti kompetisi apa pun adalah ciri klasik penipuan. Jangan klik tautan atau membagikan data pribadi."
+      },
+      {
+        "question": "Petugas bank menelepon dan meminta kode OTP untuk 'membatalkan transaksi mencurigakan'. Apa tindakan yang tepat?",
+        "options": [
+          "Berikan OTP agar transaksi segera dibatalkan",
+          "Tutup telepon dan hubungi call center resmi bank melalui nomor di kartu/aplikasi",
+          "Berikan OTP hanya sebagian",
+          "Minta petugas menghubungi lagi besok"
+        ],
+        "correctIndex": 1,
+        "explanation": "Bank resmi tidak pernah meminta OTP lewat telepon. Selalu verifikasi lewat kanal resmi yang Anda cari sendiri, bukan nomor yang diberikan penelepon."
+      }
+    ]
+  }
+]

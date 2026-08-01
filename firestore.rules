@@ -1,0 +1,50 @@
+rules_version = '2';
+
+// Firestore Security Rules — ScamShield AI
+// Sesuai struktur koleksi PRD §16. Deploy dengan:
+//   firebase deploy --only firestore:rules
+//
+// Prinsip:
+// - scan_history & user_education_progress: hanya pemilik data (userId == auth.uid)
+//   yang boleh baca/tulis. Penulisan tetap dilakukan oleh backend (Admin SDK, bypass
+//   rules ini), tapi rules ini melindungi apabila client suatu saat mengakses Firestore
+//   langsung (mis. untuk realtime sync riwayat).
+// - community_reports: siapa pun yang login boleh membuat laporan (create),
+//   tapi tidak boleh mengubah/menghapus laporan orang lain; verifikasi status
+//   hanya diubah lewat backend (Admin SDK).
+// - education_content: bersifat publik (read-only untuk client), hanya backend
+//   (Admin SDK) yang boleh menulis.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /users/{userId} {
+      allow read, update: if request.auth != null && request.auth.uid == userId;
+      allow create: if request.auth != null && request.auth.uid == userId;
+      allow delete: if false;
+    }
+
+    match /scan_history/{scanId} {
+      allow read: if request.auth != null && request.auth.uid == resource.data.userId;
+      allow delete: if request.auth != null && request.auth.uid == resource.data.userId;
+      // Create/update sebaiknya hanya lewat backend (Admin SDK melewati rules ini).
+      allow create, update: if false;
+    }
+
+    match /community_reports/{reportId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+                    && request.resource.data.reportedBy == request.auth.uid;
+      allow update, delete: if false; // status verifikasi hanya diubah via backend
+    }
+
+    match /education_content/{contentId} {
+      allow read: if true; // konten edukasi publik
+      allow write: if false; // hanya backend (Admin SDK) yang mengelola konten
+    }
+
+    match /user_education_progress/{userId}/items/{contentId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}
