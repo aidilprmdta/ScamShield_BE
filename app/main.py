@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
+from app.core.rate_limit import setup_rate_limiting
 from app.repositories.firestore_repository import init_firebase
 from app.utils.exceptions import register_exception_handlers
 
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
     )
 
     register_exception_handlers(app)
+    setup_rate_limiting(app)
     app.include_router(api_router)
 
     @app.get("/", tags=["Health"], summary="Health check")
