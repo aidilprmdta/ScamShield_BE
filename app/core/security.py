@@ -9,11 +9,11 @@ diamankan menggunakan dependency `get_current_user`.
 from typing import Optional
 
 import firebase_admin
-from fastapi import Header, HTTPException, status
+from fastapi import Header
 from firebase_admin import auth as firebase_auth
 
 from app.core.logging import get_logger
-from app.utils.exceptions import UnauthorizedError
+from app.utils.exceptions import AppError, UnauthorizedError
 
 logger = get_logger(__name__)
 
@@ -40,6 +40,30 @@ async def get_current_user(authorization: Optional[str] = Header(default=None)) 
         raise UnauthorizedError("Token tidak valid atau kedaluwarsa.") from exc
 
 
+async def get_admin_user(authorization: Optional[str] = Header(default=None)) -> str:
+    """
+    Dependency WAJIB admin: verifikasi token + custom claim 'admin': True.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise UnauthorizedError("Header Authorization Bearer <token> wajib disertakan.")
+
+    token = authorization.split(" ", 1)[1].strip()
+
+    if not firebase_admin._apps:
+        raise UnauthorizedError("Layanan autentikasi belum dikonfigurasi.")
+
+    try:
+        decoded = firebase_auth.verify_id_token(token)
+    except Exception as exc:
+        logger.warning("Gagal verifikasi Firebase ID token: %s", exc)
+        raise UnauthorizedError("Token tidak valid atau kedaluwarsa.") from exc
+
+    if not decoded.get("admin", False):
+        raise UnauthorizedError("Akses ditolak. Hanya admin yang bisa mengakses endpoint ini.")
+
+    return decoded["uid"]
+
+
 async def get_optional_user(authorization: Optional[str] = Header(default=None)) -> Optional[str]:
     """
     Dependency OPSIONAL login: mengembalikan uid jika token valid,
@@ -50,5 +74,5 @@ async def get_optional_user(authorization: Optional[str] = Header(default=None))
         return None
     try:
         return await get_current_user(authorization)
-    except HTTPException:
+    except AppError:
         return None
