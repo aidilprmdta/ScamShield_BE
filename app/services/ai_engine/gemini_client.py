@@ -38,6 +38,8 @@ def _get_model() -> genai.GenerativeModel:
             generation_config={
                 "response_mime_type": "application/json",
                 "temperature": 0.2,
+                # Batasi panjang output agar respons JSON lebih cepat & hemat token
+                "max_output_tokens": 1024,
             },
         )
     return _model
