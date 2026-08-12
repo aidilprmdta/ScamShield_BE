@@ -222,9 +222,9 @@ def update_community_report(report_id: str, updates: dict[str, Any]) -> Optional
         return dict(doc)
 
 
-def list_user_reports(user_id: str) -> list[dict[str, Any]]:
+def list_user_reports(user_id: str, limit: int = 50) -> list[dict[str, Any]]:
     with _LOCK:
         data = _ensure_store()
         items = [dict(d) for d in data["community_reports"].values() if d.get("reportedBy") == user_id]
     items.sort(key=lambda d: d.get("createdAt") or "", reverse=True)
-    return items
+    return items[:limit]
