@@ -15,6 +15,7 @@ from app.models.report_schema import (
     VerifiedStatus,
 )
 from app.repositories.firestore_repository import now_iso, save_community_report
+from app.services.notify_admin import notify_admins_new_report
 
 router = APIRouter()
 
@@ -43,4 +44,6 @@ async def submit_report(
         reported_by=user_id,
         created_at=created_at,
     )
+    notify_admins_new_report(report_id, payload.type.value, doc["content"])
+
     return CommunityReportResponse(data=result)
