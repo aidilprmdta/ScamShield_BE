@@ -399,7 +399,10 @@ async def change_password(
         )
         sign_in_payload = sign_in_resp.json()
         if sign_in_resp.status_code >= 400:
-            _map_error_message_to_http_status(_parse_identity_toolkit_error(sign_in_payload))
+            message = _parse_identity_toolkit_error(sign_in_payload)
+            if message.upper() in {"INVALID_LOGIN_CREDENTIALS", "INVALID_PASSWORD"}:
+                raise UnauthorizedError("Kata sandi saat ini salah.")
+            _map_error_message_to_http_status(message)
 
         id_token = sign_in_payload.get("idToken")
         if not id_token:
