@@ -21,7 +21,10 @@ async def get_history(
     cursor: Optional[str] = Query(default=None, description="scanId item terakhir dari halaman sebelumnya"),
 ) -> HistoryListResponse:
     items = list_scan_history(user_id=user_id, limit=limit, start_after_id=cursor)
-    next_cursor = items[-1]["scanId"] if len(items) == limit and items else None
+    next_cursor = None
+    if len(items) == limit and items:
+        last = items[-1]
+        next_cursor = last.get("scanId") or last.get("scan_id")
     return HistoryListResponse(data=items, next_cursor=next_cursor)
 
 

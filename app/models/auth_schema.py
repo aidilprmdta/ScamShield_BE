@@ -37,10 +37,27 @@ class RefreshTokenRequest(BaseModel):
 class AuthMeData(BaseModel):
     uid: str
     email: Optional[str] = None
+    display_name: Optional[str] = None
     admin: bool = False
 
 
 class AuthMeResponse(BaseModel):
     success: bool = True
     data: AuthMeData
+
+
+class UpdateProfileRequest(BaseModel):
+    display_name: Optional[str] = Field(
+        default=None,
+        min_length=2,
+        max_length=50,
+        description="Nama tampilan pengguna",
+    )
+    email: Optional[str] = Field(default=None, description="Email baru (opsional)")
+
+
+class UpdateProfileResponse(BaseModel):
+    success: bool = True
+    data: AuthMeData
+    message: str = "Profil berhasil diperbarui."
 
