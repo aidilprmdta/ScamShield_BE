@@ -8,18 +8,16 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends
 
-from app.core.logging import get_logger
 from app.core.security import get_optional_user
 from app.models.analyze_schema import AnalyzeChatRequest, AnalyzeResponse, ScanType
-from app.repositories.firestore_repository import add_user_notification, save_scan_history
 from app.services.ai_engine.gemini_client import analyze_with_gemini
 from app.services.ai_engine.prompt_templates import build_chat_prompt
+from app.services.analysis_persist import persist_analysis_result
 from app.services.risk_engine.risk_scorer import build_analysis_result
 from app.utils.exceptions import OcrLowConfidenceError
 from app.utils.validators import MIN_OCR_CONFIDENCE, validate_chat_text
 
 router = APIRouter()
-logger = get_logger(__name__)
 
 
 @router.post("/analyze/chat", response_model=AnalyzeResponse, summary="Analisis teks chat/SMS")
@@ -45,23 +43,10 @@ async def analyze_chat(
         input_summary=text,
         llm_result=llm_result,
     )
-
-    try:
-        if user_id:
-            scan_id = save_scan_history(user_id, result.model_dump(mode="json"))
-            result.scan_id = scan_id
-            if result.risk_level.value == "high":
-                add_user_notification(
-                    uid=user_id,
-                    title="Ancaman tinggi terdeteksi",
-                    body=result.input_summary[:120],
-                    notif_type="security_alert",
-                    extra={"scan_id": scan_id, "risk_level": result.risk_level.value},
-                )
-        else:
-            logger.info("Skip simpan riwayat: user belum login")
-    except Exception as exc:  # noqa: BLE001
-        # Jangan gagalkan response analisis hanya karena penyimpanan riwayat gagal
-        logger.warning("Gagal menyimpan scan_history: %s", exc)
+    result = await persist_analysis_result(
+        user_id,
+        result,
+        high_risk_title="Ancaman tinggi terdeteksi",
+    )
 
     return AnalyzeResponse(data=result)
