@@ -10,6 +10,8 @@ from app.models.auth_schema import (
     AuthMeResponse,
     AuthResponse,
     AuthTokens,
+    ChangePasswordRequest,
+    ChangePasswordResponse,
     GoogleLoginRequest,
     LoginRequest,
     RefreshTokenRequest,
@@ -331,4 +333,103 @@ async def update_profile(
             admin=bool(claims.get("admin", False)),
         )
     )
+
+
+@router.post(
+    "/auth/change-password",
+    response_model=ChangePasswordResponse,
+    summary="Ubah kata sandi pengguna (email/password)",
+)
+@limiter.limit("5/minute")
+async def change_password(
+    request: Request,
+    payload: ChangePasswordRequest,
+    user_id: str = Depends(get_current_user),
+) -> ChangePasswordResponse:
+    """
+    Alur Firebase Identity Toolkit:
+    1. Pastikan akun punya provider password (bukan Google-only)
+    2. Verifikasi kata sandi lama via signInWithPassword
+    3. Update kata sandi via accounts:update
+    """
+    settings = get_settings()
+    if not settings.firebase_web_api_key:
+        raise ValidationAppError("Server belum dikonfigurasi untuk Firebase Auth (FIREBASE_WEB_API_KEY).")
+
+    new_password = payload.new_password.strip()
+    current_password = payload.current_password
+    if len(new_password) < 6:
+        raise ValidationAppError("Kata sandi baru minimal 6 karakter.")
+    if new_password == current_password:
+        raise ValidationAppError("Kata sandi baru harus berbeda dari kata sandi saat ini.")
+
+    try:
+        user_record = firebase_auth.get_user(user_id)
+    except Exception as exc:  # noqa: BLE001
+        raise UnauthorizedError("Pengguna tidak ditemukan.") from exc
+
+    providers = [p.provider_id for p in (user_record.provider_data or [])]
+    if "password" not in providers:
+        raise ValidationAppError(
+            "Akun ini masuk dengan Google. Kata sandi tidak dapat diubah di aplikasi. "
+            "Kelola keamanan melalui akun Google Anda."
+        )
+
+    email = (user_record.email or "").strip()
+    if not email:
+        raise ValidationAppError("Email akun tidak ditemukan. Tidak dapat mengubah kata sandi.")
+
+    sign_in_url = (
+        "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
+        f"?key={settings.firebase_web_api_key}"
+    )
+    update_url = (
+        f"https://identitytoolkit.googleapis.com/v1/accounts:update"
+        f"?key={settings.firebase_web_api_key}"
+    )
+
+    async with httpx.AsyncClient(timeout=settings.http_timeout_seconds) as client:
+        sign_in_resp = await client.post(
+            sign_in_url,
+            json={
+                "email": email,
+                "password": current_password,
+                "returnSecureToken": True,
+            },
+        )
+        sign_in_payload = sign_in_resp.json()
+        if sign_in_resp.status_code >= 400:
+            _map_error_message_to_http_status(_parse_identity_toolkit_error(sign_in_payload))
+
+        id_token = sign_in_payload.get("idToken")
+        if not id_token:
+            raise ValidationAppError("Gagal memverifikasi kata sandi saat ini.")
+
+        update_resp = await client.post(
+            update_url,
+            json={
+                "idToken": id_token,
+                "password": new_password,
+                "returnSecureToken": True,
+            },
+        )
+        update_payload = update_resp.json()
+        if update_resp.status_code >= 400:
+            message = _parse_identity_toolkit_error(update_payload)
+            if message.upper() in {"CREDENTIAL_TOO_OLD_LOGIN_AGAIN"}:
+                raise ValidationAppError(
+                    "Sesi login terlalu lama. Masuk kembali, lalu coba ubah kata sandi."
+                )
+            _map_error_message_to_http_status(message)
+
+    tokens = AuthTokens(
+        idToken=update_payload.get("idToken") or id_token,
+        refreshToken=update_payload.get("refreshToken") or sign_in_payload.get("refreshToken", ""),
+        localId=update_payload.get("localId") or user_id,
+        email=update_payload.get("email") or email,
+    )
+    if not tokens.refreshToken:
+        raise ValidationAppError("Kata sandi diubah, tetapi token sesi tidak lengkap. Silakan login ulang.")
+
+    return ChangePasswordResponse(data=tokens)
 
