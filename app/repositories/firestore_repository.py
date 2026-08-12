@@ -9,6 +9,7 @@ yang didefinisikan di PRD §16:
 import json
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import firebase_admin
@@ -26,6 +27,17 @@ SCAN_HISTORY_COLLECTION = "scan_history"
 COMMUNITY_REPORTS_COLLECTION = "community_reports"
 EDUCATION_CONTENT_COLLECTION = "education_content"
 USER_EDUCATION_PROGRESS_COLLECTION = "user_education_progress"
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _resolve_service_account_path(raw: str) -> str:
+    path = Path(raw.strip())
+    if path.is_file():
+        return str(path)
+    candidate = BACKEND_ROOT / raw.strip()
+    if candidate.is_file():
+        return str(candidate)
+    return raw.strip()
 
 
 def init_firebase() -> None:
@@ -46,7 +58,7 @@ def init_firebase() -> None:
             cred_dict = json.loads(raw)
             cred = credentials.Certificate(cred_dict)
         else:
-            cred = credentials.Certificate(raw)
+            cred = credentials.Certificate(_resolve_service_account_path(raw))
         firebase_admin.initialize_app(cred)
         logger.info("Firebase Admin SDK berhasil diinisialisasi.")
     except Exception as exc:  # noqa: BLE001
