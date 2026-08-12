@@ -61,3 +61,14 @@ class UpdateProfileResponse(BaseModel):
     data: AuthMeData
     message: str = "Profil berhasil diperbarui."
 
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, description="Kata sandi saat ini")
+    new_password: str = Field(..., min_length=6, description="Kata sandi baru (min 6 karakter)")
+
+
+class ChangePasswordResponse(BaseModel):
+    success: bool = True
+    data: AuthTokens
+    message: str = "Kata sandi berhasil diubah."
+
