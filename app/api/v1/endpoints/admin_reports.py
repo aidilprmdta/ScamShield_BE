@@ -9,13 +9,25 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from firebase_admin import auth as firebase_auth, firestore
 
+from app.core.logging import get_logger
 from app.core.security import get_admin_user
 from app.models.report_schema import VerifiedStatus
-from app.repositories.firestore_repository import _get_db, now_iso
+from app.repositories.firestore_repository import (
+    _get_db,
+    _is_firestore_unavailable,
+    _mark_local_fallback,
+    _should_use_local,
+    count_community_reports,
+    get_community_report,
+    list_community_reports,
+    now_iso,
+    update_community_report,
+)
 from app.services.notify_reporter import notify_reporter_status_updated
 from app.utils.exceptions import NotFoundError
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
+logger = get_logger(__name__)
 
 AUDIT_COLLECTION = "report_audit_logs"
 
@@ -88,19 +100,56 @@ def _write_audit_log(
     admin_email: Optional[str],
     created_at: str,
 ) -> None:
-    db = _get_db()
-    audit_id = str(uuid4())
-    db.collection(AUDIT_COLLECTION).document(audit_id).set(
-        {
-            "auditId": audit_id,
-            "reportId": report_id,
-            "action": action,
-            "previousStatus": previous_status,
-            "newStatus": new_status,
-            "adminUid": admin_uid,
-            "adminEmail": admin_email,
-            "createdAt": created_at,
-        }
+    if _should_use_local():
+        logger.info(
+            "Audit log (local): report=%s %s -> %s by %s",
+            report_id,
+            previous_status,
+            new_status,
+            admin_uid,
+        )
+        return
+
+    try:
+        db = _get_db()
+        audit_id = str(uuid4())
+        db.collection(AUDIT_COLLECTION).document(audit_id).set(
+            {
+                "auditId": audit_id,
+                "reportId": report_id,
+                "action": action,
+                "previousStatus": previous_status,
+                "newStatus": new_status,
+                "adminUid": admin_uid,
+                "adminEmail": admin_email,
+                "createdAt": created_at,
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        if _is_firestore_unavailable(exc):
+            _mark_local_fallback(exc)
+            logger.info(
+                "Audit log skipped (firestore unavailable): report=%s %s -> %s",
+                report_id,
+                previous_status,
+                new_status,
+            )
+            return
+        logger.warning("Gagal menulis audit log: %s", exc)
+
+
+def _to_list_item(d: dict) -> ReportListItem:
+    return ReportListItem(
+        report_id=d.get("reportId") or d.get("report_id") or "",
+        type=d.get("type", ""),
+        content=d.get("content", ""),
+        note=d.get("note"),
+        verified_status=d.get("verifiedStatus", "pending"),
+        reported_by=d.get("reportedBy"),
+        created_at=d.get("createdAt", ""),
+        verified_by=d.get("verifiedBy"),
+        verified_by_email=d.get("verifiedByEmail"),
+        verified_at=d.get("verifiedAt"),
     )
 
 
@@ -109,12 +158,7 @@ async def count_reports(
     status_filter: Optional[str] = "pending",
     _admin_uid: str = Depends(get_admin_user),
 ) -> ReportCountResponse:
-    db = _get_db()
-    query = db.collection("community_reports")
-    if status_filter:
-        query = query.where("verifiedStatus", "==", status_filter)
-    count = sum(1 for _ in query.stream())
-    return ReportCountResponse(count=count)
+    return ReportCountResponse(count=count_community_reports(status_filter=status_filter))
 
 
 @router.get("/reports", response_model=ReportListResponse, summary="Daftar semua laporan (admin only)")
@@ -123,30 +167,8 @@ async def list_reports(
     limit: int = 50,
     _admin_uid: str = Depends(get_admin_user),
 ) -> ReportListResponse:
-    db = _get_db()
-    query = db.collection("community_reports").order_by("createdAt", direction=firestore.Query.DESCENDING)
-
-    if status_filter:
-        query = query.where("verifiedStatus", "==", status_filter)
-
-    docs = query.limit(limit).stream()
-
-    items = []
-    for doc in docs:
-        d = doc.to_dict() or {}
-        items.append(ReportListItem(
-            report_id=d.get("reportId", doc.id),
-            type=d.get("type", ""),
-            content=d.get("content", ""),
-            note=d.get("note"),
-            verified_status=d.get("verifiedStatus", "pending"),
-            reported_by=d.get("reportedBy"),
-            created_at=d.get("createdAt", ""),
-            verified_by=d.get("verifiedBy"),
-            verified_by_email=d.get("verifiedByEmail"),
-            verified_at=d.get("verifiedAt"),
-        ))
-
+    docs = list_community_reports(status_filter=status_filter, limit=limit)
+    items = [_to_list_item(d) for d in docs]
     return ReportListResponse(data=items, total=len(items))
 
 
@@ -155,28 +177,40 @@ async def get_report_audit(
     report_id: str,
     _admin_uid: str = Depends(get_admin_user),
 ) -> AuditLogListResponse:
-    db = _get_db()
-    docs = (
-        db.collection(AUDIT_COLLECTION)
-        .where("reportId", "==", report_id)
-        .order_by("createdAt", direction=firestore.Query.DESCENDING)
-        .limit(50)
-        .stream()
-    )
-    items = []
-    for doc in docs:
-        d = doc.to_dict() or {}
-        items.append(AuditLogItem(
-            audit_id=d.get("auditId", doc.id),
-            report_id=d.get("reportId", report_id),
-            action=d.get("action", ""),
-            previous_status=d.get("previousStatus"),
-            new_status=d.get("newStatus", ""),
-            admin_uid=d.get("adminUid", ""),
-            admin_email=d.get("adminEmail"),
-            created_at=d.get("createdAt", ""),
-        ))
-    return AuditLogListResponse(data=items)
+    if _should_use_local():
+        return AuditLogListResponse(data=[])
+
+    try:
+        db = _get_db()
+        docs = (
+            db.collection(AUDIT_COLLECTION)
+            .where("reportId", "==", report_id)
+            .order_by("createdAt", direction=firestore.Query.DESCENDING)
+            .limit(50)
+            .stream()
+        )
+        items = []
+        for doc in docs:
+            d = doc.to_dict() or {}
+            items.append(
+                AuditLogItem(
+                    audit_id=d.get("auditId", doc.id),
+                    report_id=d.get("reportId", report_id),
+                    action=d.get("action", ""),
+                    previous_status=d.get("previousStatus"),
+                    new_status=d.get("newStatus", ""),
+                    admin_uid=d.get("adminUid", ""),
+                    admin_email=d.get("adminEmail"),
+                    created_at=d.get("createdAt", ""),
+                )
+            )
+        return AuditLogListResponse(data=items)
+    except Exception as exc:  # noqa: BLE001
+        if _is_firestore_unavailable(exc):
+            _mark_local_fallback(exc)
+            return AuditLogListResponse(data=[])
+        logger.warning("Gagal memuat audit log: %s", exc)
+        return AuditLogListResponse(data=[])
 
 
 @router.patch("/reports/{report_id}", response_model=UpdateReportStatusResponse, summary="Update status laporan (admin only)")
@@ -185,14 +219,10 @@ async def update_report_status(
     payload: UpdateReportStatusRequest,
     admin_uid: str = Depends(get_admin_user),
 ) -> UpdateReportStatusResponse:
-    db = _get_db()
-    doc_ref = db.collection("community_reports").document(report_id)
-    doc = doc_ref.get()
-
-    if not doc.exists:
+    report_data = get_community_report(report_id)
+    if not report_data:
         raise NotFoundError(f"Laporan {report_id} tidak ditemukan.")
 
-    report_data = doc.to_dict() or {}
     reported_by = report_data.get("reportedBy")
     report_type = report_data.get("type", "")
     content = report_data.get("content", "")
@@ -201,14 +231,17 @@ async def update_report_status(
     verified_at = now_iso()
     admin_email = _admin_email(admin_uid)
 
-    doc_ref.update(
+    updated = update_community_report(
+        report_id,
         {
             "verifiedStatus": payload.status.value,
             "verifiedBy": admin_uid,
             "verifiedByEmail": admin_email,
             "verifiedAt": verified_at,
-        }
+        },
     )
+    if not updated:
+        raise NotFoundError(f"Laporan {report_id} tidak ditemukan.")
 
     _write_audit_log(
         report_id=report_id,
