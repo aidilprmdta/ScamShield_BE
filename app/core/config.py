@@ -17,6 +17,9 @@ class Settings(BaseSettings):
 
     # Firebase
     firebase_service_account_json: str = ""
+    # Firebase Auth (Identity Toolkit) - untuk login/register email/password
+    # Tambahkan API key dari Firebase Console -> Authentication -> Identity Toolkit.
+    firebase_web_api_key: str = ""
 
     # App
     environment: str = "development"
