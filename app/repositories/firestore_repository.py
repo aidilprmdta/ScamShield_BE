@@ -187,17 +187,25 @@ def delete_scan_history(user_id: str, scan_id: str) -> bool:
 # ---------------- community_reports ----------------
 
 def save_community_report(user_id: Optional[str], report: dict[str, Any]) -> str:
+    from app.core.logging import get_logger
+    logger = get_logger(__name__)
+    
     if _should_use_local():
+        logger.warning("Using local store fallback for community_report")
         return local_store.save_community_report(user_id, report)
     try:
         db = _get_db()
         report_id = str(uuid.uuid4())
         doc = {**report, "reportId": report_id, "reportedBy": user_id}
+        logger.info(f"Saving community_report to Firestore: report_id={report_id}, user_id={user_id}")
         db.collection(COMMUNITY_REPORTS_COLLECTION).document(report_id).set(doc)
+        logger.info(f"Successfully saved community_report: {report_id}")
         return report_id
     except Exception as exc:  # noqa: BLE001
+        logger.error(f"Failed to save community_report to Firestore: {exc}", exc_info=True)
         if _is_firestore_unavailable(exc):
             _mark_local_fallback(exc)
+            logger.warning("Falling back to local store")
             return local_store.save_community_report(user_id, report)
         raise UpstreamServiceError(f"Gagal menyimpan laporan: {exc}") from exc
 

@@ -10,6 +10,7 @@ from app.models.auth_schema import (
     AuthMeResponse,
     AuthResponse,
     AuthTokens,
+    ChangePasswordRequest,
     GoogleLoginRequest,
     LoginRequest,
     RefreshTokenRequest,
@@ -332,3 +333,70 @@ async def update_profile(
         )
     )
 
+
+@router.post("/auth/change-password", response_model=dict, summary="Ubah password pengguna")
+@limiter.limit("5/minute")
+async def change_password(
+    request: Request,
+    payload: ChangePasswordRequest,
+    user_id: str = Depends(get_current_user),
+    authorization: Optional[str] = Header(default=None),
+) -> dict:
+    """
+    Ubah password user yang sudah login.
+    Verifikasi password lama, lalu update ke password baru.
+    """
+    settings = get_settings()
+
+    if not settings.firebase_web_api_key:
+        raise ValidationAppError("Server belum dikonfigurasi untuk Firebase Auth (FIREBASE_WEB_API_KEY).")
+
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise UnauthorizedError("Header Authorization Bearer <token> wajib disertakan.")
+
+    # Validasi input
+    if len(payload.new_password) < 6:
+        raise ValidationAppError("Password baru minimal 6 karakter.")
+
+    if payload.current_password == payload.new_password:
+        raise ValidationAppError("Password baru tidak boleh sama dengan password lama.")
+
+    # Ambil email user
+    try:
+        user_record = firebase_auth.get_user(user_id)
+        email = user_record.email
+        if not email:
+            raise ValidationAppError("Akun ini tidak memiliki email (mungkin login via Google).")
+    except Exception as exc:
+        raise ValidationAppError(f"Gagal mengambil data user: {exc}") from exc
+
+    # Verifikasi password lama dengan mencoba login
+    verify_url = (
+        "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
+        f"?key={settings.firebase_web_api_key}"
+    )
+
+    async with httpx.AsyncClient(timeout=settings.http_timeout_seconds) as client:
+        verify_resp = await client.post(
+            verify_url,
+            json={
+                "email": email,
+                "password": payload.current_password,
+                "returnSecureToken": False,
+            },
+        )
+
+    if verify_resp.status_code != 200:
+        data = verify_resp.json() if verify_resp.content else {}
+        message = _parse_identity_toolkit_error(data)
+        if "INVALID_PASSWORD" in message or "INVALID_LOGIN_CREDENTIALS" in message:
+            raise UnauthorizedError("Password lama salah.")
+        _map_error_message_to_http_status(message)
+
+    # Update password via Firebase Admin SDK
+    try:
+        firebase_auth.update_user(user_id, password=payload.new_password)
+    except Exception as exc:
+        raise ValidationAppError(f"Gagal mengubah password: {exc}") from exc
+
+    return {"success": True, "message": "Password berhasil diubah."}
