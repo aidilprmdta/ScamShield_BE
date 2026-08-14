@@ -62,12 +62,24 @@ class UpdateProfileResponse(BaseModel):
     message: str = "Profil berhasil diperbarui."
 
 
+<<<<<<< HEAD
 
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(..., description="Password saat ini")
     new_password: str = Field(..., min_length=6, description="Password baru (min 6 karakter)")
+=======
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, description="Kata sandi saat ini")
+    new_password: str = Field(..., min_length=6, description="Kata sandi baru (min 6 karakter)")
+>>>>>>> 7d5489a61e7da784a79ec46802ae4f10c5061d99
 
 
 class ChangePasswordResponse(BaseModel):
     success: bool = True
+<<<<<<< HEAD
     message: str = "Password berhasil diubah."
+=======
+    data: AuthTokens
+    message: str = "Kata sandi berhasil diubah."
+
+>>>>>>> 7d5489a61e7da784a79ec46802ae4f10c5061d99

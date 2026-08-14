@@ -113,7 +113,8 @@ def build_analysis_result(
         red_flags=red_flags,
         recommendation=recommendation,
         recommendation_text=recommendation_text,
-        related_education_category=category if level != RiskLevel.LOW else category,
+        # Hanya tampilkan "Pelajari lebih lanjut" bila ada indikasi risiko / kategori modus
+        related_education_category=category if level != RiskLevel.LOW else None,
         link_reputation=link_reputation,
         created_at=datetime.now(timezone.utc).isoformat(),
     )

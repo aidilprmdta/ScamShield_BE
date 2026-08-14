@@ -210,6 +210,137 @@ def save_community_report(user_id: Optional[str], report: dict[str, Any]) -> str
         raise UpstreamServiceError(f"Gagal menyimpan laporan: {exc}") from exc
 
 
+def _normalize_report_doc(doc_id: str, data: dict[str, Any]) -> dict[str, Any]:
+    out = dict(data)
+    report_id = out.get("reportId") or out.get("report_id") or doc_id
+    out["reportId"] = report_id
+    out["report_id"] = report_id
+    return out
+
+
+def list_community_reports(
+    status_filter: Optional[str] = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    if _should_use_local():
+        return [
+            _normalize_report_doc(d.get("reportId", ""), d)
+            for d in local_store.list_community_reports(status_filter, limit)
+        ]
+    try:
+        db = _get_db()
+        query = db.collection(COMMUNITY_REPORTS_COLLECTION)
+        if status_filter:
+            query = query.where("verifiedStatus", "==", status_filter)
+        try:
+            docs = list(
+                query.order_by("createdAt", direction=firestore.Query.DESCENDING)
+                .limit(limit)
+                .stream()
+            )
+        except Exception:
+            # Index belum siap: ambil lalu sort di memori
+            docs = list(query.limit(limit * 2).stream())
+            docs.sort(
+                key=lambda d: (d.to_dict() or {}).get("createdAt") or "",
+                reverse=True,
+            )
+            docs = docs[:limit]
+        return [_normalize_report_doc(doc.id, doc.to_dict() or {}) for doc in docs]
+    except Exception as exc:  # noqa: BLE001
+        if _is_firestore_unavailable(exc):
+            _mark_local_fallback(exc)
+            return [
+                _normalize_report_doc(d.get("reportId", ""), d)
+                for d in local_store.list_community_reports(status_filter, limit)
+            ]
+        raise UpstreamServiceError(f"Gagal memuat laporan: {exc}") from exc
+
+
+def list_user_reports(user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    if _should_use_local():
+        return [
+            _normalize_report_doc(d.get("reportId", ""), d)
+            for d in local_store.list_user_reports(user_id, limit)
+        ]
+    try:
+        db = _get_db()
+        query = db.collection(COMMUNITY_REPORTS_COLLECTION).where("reportedBy", "==", user_id)
+        try:
+            docs = list(
+                query.order_by("createdAt", direction=firestore.Query.DESCENDING)
+                .limit(limit)
+                .stream()
+            )
+        except Exception:
+            docs = list(query.limit(limit * 2).stream())
+            docs.sort(
+                key=lambda d: (d.to_dict() or {}).get("createdAt") or "",
+                reverse=True,
+            )
+            docs = docs[:limit]
+        return [_normalize_report_doc(doc.id, doc.to_dict() or {}) for doc in docs]
+    except Exception as exc:  # noqa: BLE001
+        if _is_firestore_unavailable(exc):
+            _mark_local_fallback(exc)
+            return [
+                _normalize_report_doc(d.get("reportId", ""), d)
+                for d in local_store.list_user_reports(user_id, limit)
+            ]
+        raise UpstreamServiceError(f"Gagal memuat laporan user: {exc}") from exc
+
+
+def get_community_report(report_id: str) -> Optional[dict[str, Any]]:
+    if _should_use_local():
+        doc = local_store.get_community_report(report_id)
+        return _normalize_report_doc(report_id, doc) if doc else None
+    try:
+        db = _get_db()
+        snap = db.collection(COMMUNITY_REPORTS_COLLECTION).document(report_id).get()
+        if not snap.exists:
+            return None
+        return _normalize_report_doc(snap.id, snap.to_dict() or {})
+    except Exception as exc:  # noqa: BLE001
+        if _is_firestore_unavailable(exc):
+            _mark_local_fallback(exc)
+            doc = local_store.get_community_report(report_id)
+            return _normalize_report_doc(report_id, doc) if doc else None
+        raise UpstreamServiceError(f"Gagal memuat detail laporan: {exc}") from exc
+
+
+def update_community_report(report_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]:
+    if _should_use_local():
+        doc = local_store.update_community_report(report_id, updates)
+        return _normalize_report_doc(report_id, doc) if doc else None
+    try:
+        db = _get_db()
+        ref = db.collection(COMMUNITY_REPORTS_COLLECTION).document(report_id)
+        snap = ref.get()
+        if not snap.exists:
+            return None
+        ref.update(updates)
+        updated = snap.to_dict() or {}
+        updated.update(updates)
+        return _normalize_report_doc(report_id, updated)
+    except Exception as exc:  # noqa: BLE001
+        if _is_firestore_unavailable(exc):
+            _mark_local_fallback(exc)
+            doc = local_store.update_community_report(report_id, updates)
+            return _normalize_report_doc(report_id, doc) if doc else None
+        raise UpstreamServiceError(f"Gagal memperbarui laporan: {exc}") from exc
+
+
+def count_community_reports(status_filter: Optional[str] = None) -> int:
+    return len(list_community_reports(status_filter=status_filter, limit=500))
+
+
+def count_user_reports(user_id: str, status_filter: Optional[str] = None) -> int:
+    items = list_user_reports(user_id, limit=500)
+    if status_filter:
+        items = [d for d in items if d.get("verifiedStatus") == status_filter]
+    return len(items)
+
+
 # ---------------- fcm tokens ----------------
 
 def save_fcm_token(uid: str, fcm_token: str) -> None:
