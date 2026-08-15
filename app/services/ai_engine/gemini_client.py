@@ -79,7 +79,13 @@ async def _call_gemini(prompt: str) -> dict[str, Any]:
         logger.error("Gemini API error: %s", exc)
         raise UpstreamServiceError("Gagal menghubungi mesin AI (Gemini). Silakan coba lagi.") from exc
 
-    raw_text = (response.text or "").strip()
+    try:
+        raw_text = (response.text or "").strip()
+    except ValueError as exc:
+        logger.error("Gemini menolak/memblokir respons: %s", exc)
+        raise UpstreamServiceError(
+            "Mesin AI tidak dapat memproses konten ini. Coba dengan teks yang berbeda."
+        ) from exc
     if not raw_text:
         raise UpstreamServiceError("Mesin AI mengembalikan respons kosong.")
 
