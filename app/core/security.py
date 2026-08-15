@@ -1,21 +1,146 @@
 """
 Verifikasi Firebase ID Token dari header Authorization: Bearer <token>.
-
-MVP: autentikasi bersifat "Should Have" (lihat PRD §6), sehingga endpoint
-analisis tetap bisa dipakai tanpa login (userId opsional / anonim),
-namun endpoint yang menyentuh data milik user (history, report) sebaiknya
-diamankan menggunakan dependency `get_current_user`.
+Menerima token dari project Android (scamshieldai-9de2170b) maupun project lama.
 """
-from typing import Optional
+from __future__ import annotations
+
+import base64
+import json
+from typing import Any, Optional
 
 import firebase_admin
 from fastapi import Header
 from firebase_admin import auth as firebase_auth
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.utils.exceptions import AppError, UnauthorizedError
+from app.utils.exceptions import UnauthorizedError
 
 logger = get_logger(__name__)
+
+_CLOCK_SKEW_SECONDS = 60
+
+
+def _allowed_projects() -> list[str]:
+    settings = get_settings()
+    raw = settings.firebase_project_ids or settings.firebase_project_id
+    projects = [p.strip() for p in raw.split(",") if p.strip()]
+    if not projects:
+        projects = ["scamshieldai-9de2170b", "scamshield-ai-2026"]
+    return projects
+
+
+def _admin_project_id() -> Optional[str]:
+    if not firebase_admin._apps:
+        return None
+    try:
+        return firebase_admin.get_app().project_id
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _peek_jwt_claims(token: str) -> dict[str, Any]:
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return {}
+        payload_b64 = parts[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload_b64))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _issuer_ok(decoded: dict[str, Any], audience: str) -> bool:
+    iss = decoded.get("iss")
+    aud = decoded.get("aud") or audience
+    if not isinstance(iss, str) or not aud:
+        return False
+    return iss == f"https://securetoken.google.com/{aud}"
+
+
+def _verify_with_google(token: str, audience: str, request: google_requests.Request) -> Optional[dict[str, Any]]:
+    try:
+        decoded = google_id_token.verify_firebase_token(
+            token,
+            request,
+            audience=audience,
+            clock_skew_in_seconds=_CLOCK_SKEW_SECONDS,
+        )
+    except TypeError:
+        decoded = google_id_token.verify_firebase_token(token, request, audience=audience)
+    if not decoded:
+        return None
+    if not _issuer_ok(decoded, audience):
+        return None
+    return decoded
+
+
+def decode_firebase_token(token: str) -> dict[str, Any]:
+    """
+    Verifikasi ID token Firebase.
+    Admin SDK hanya valid untuk project service account; jika beda project,
+    verifikasi lewat sertifikat Google dengan audience yang sesuai.
+    """
+    if not token or token.count(".") != 2:
+        raise UnauthorizedError("Token tidak valid atau kedaluwarsa.")
+
+    last_error: Exception | None = None
+    allowed = _allowed_projects()
+    claims = _peek_jwt_claims(token)
+    aud = claims.get("aud") if isinstance(claims.get("aud"), str) else None
+    admin_project = _admin_project_id()
+
+    if firebase_admin._apps and (aud is None or aud == admin_project):
+        try:
+            return firebase_auth.verify_id_token(token, clock_skew_seconds=_CLOCK_SKEW_SECONDS)
+        except TypeError:
+            try:
+                return firebase_auth.verify_id_token(token)
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                logger.info("Admin SDK menolak token: %s", exc)
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            logger.info("Admin SDK menolak token: %s", exc)
+
+    audiences: list[str] = []
+    if aud:
+        audiences.append(aud)
+    for project_id in allowed:
+        if project_id not in audiences:
+            audiences.append(project_id)
+
+    request = google_requests.Request()
+    for audience in audiences:
+        try:
+            decoded = _verify_with_google(token, audience, request)
+            if not decoded:
+                continue
+            project = decoded.get("aud")
+            if project in allowed or audience in allowed:
+                return decoded
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+
+    logger.warning("Gagal verifikasi Firebase ID token: %s", last_error)
+    raise UnauthorizedError("Token tidak valid atau kedaluwarsa.") from last_error
+
+
+def _uid_from_claims(decoded: dict[str, Any]) -> str:
+    uid = decoded.get("uid") or decoded.get("user_id") or decoded.get("sub")
+    if not uid:
+        raise UnauthorizedError("Token tidak valid atau kedaluwarsa.")
+    return str(uid)
+
+
+def _bearer_token(authorization: Optional[str]) -> Optional[str]:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    token = authorization.split(" ", 1)[1].strip()
+    return token or None
 
 
 async def get_current_user(authorization: Optional[str] = Header(default=None)) -> str:
@@ -23,56 +148,45 @@ async def get_current_user(authorization: Optional[str] = Header(default=None)) 
     Dependency WAJIB login: mengembalikan uid dari Firebase ID token.
     Melempar 401 jika token tidak ada / tidak valid.
     """
-    if not authorization or not authorization.lower().startswith("bearer "):
+    token = _bearer_token(authorization)
+    if not token:
         raise UnauthorizedError("Header Authorization Bearer <token> wajib disertakan.")
 
-    token = authorization.split(" ", 1)[1].strip()
-
-    if not firebase_admin._apps:
-        # Firebase belum diinisialisasi (mis. saat testing tanpa kredensial)
-        raise UnauthorizedError("Layanan autentikasi belum dikonfigurasi.")
-
-    try:
-        decoded = firebase_auth.verify_id_token(token)
-        return decoded["uid"]
-    except Exception as exc:  # noqa: BLE001 - berbagai error firebase-admin
-        logger.warning("Gagal verifikasi Firebase ID token: %s", exc)
-        raise UnauthorizedError("Token tidak valid atau kedaluwarsa.") from exc
+    decoded = decode_firebase_token(token)
+    return _uid_from_claims(decoded)
 
 
 async def get_admin_user(authorization: Optional[str] = Header(default=None)) -> str:
     """
-    Dependency WAJIB admin: verifikasi token + custom claim 'admin': True.
+    Dependency WAJIB admin: verifikasi token + custom claim / daftar admin.
     """
-    if not authorization or not authorization.lower().startswith("bearer "):
+    token = _bearer_token(authorization)
+    if not token:
         raise UnauthorizedError("Header Authorization Bearer <token> wajib disertakan.")
 
-    token = authorization.split(" ", 1)[1].strip()
+    decoded = decode_firebase_token(token)
+    uid = _uid_from_claims(decoded)
+    if decoded.get("admin", False):
+        return uid
 
-    if not firebase_admin._apps:
-        raise UnauthorizedError("Layanan autentikasi belum dikonfigurasi.")
+    email = decoded.get("email")
+    from app.repositories.firestore_repository import is_admin_user
 
-    try:
-        decoded = firebase_auth.verify_id_token(token)
-    except Exception as exc:
-        logger.warning("Gagal verifikasi Firebase ID token: %s", exc)
-        raise UnauthorizedError("Token tidak valid atau kedaluwarsa.") from exc
-
-    if not decoded.get("admin", False):
-        raise UnauthorizedError("Akses ditolak. Hanya admin yang bisa mengakses endpoint ini.")
-
-    return decoded["uid"]
+    if is_admin_user(uid, email if isinstance(email, str) else None):
+        return uid
+    raise UnauthorizedError("Akses ditolak. Hanya admin yang bisa mengakses endpoint ini.")
 
 
 async def get_optional_user(authorization: Optional[str] = Header(default=None)) -> Optional[str]:
     """
     Dependency OPSIONAL login: mengembalikan uid jika token valid,
-    None jika tidak ada token (dipakai di endpoint analyze/* agar tetap
-    bisa dipakai oleh pengguna anonim/tamu).
+    None jika tidak ada token (tamu).
+
+    Jika header Bearer ada tetapi token invalid/kedaluwarsa, lempar 401
+    supaya klien bisa refresh — jangan anggap sebagai tamu.
     """
-    if not authorization or not authorization.lower().startswith("bearer "):
+    token = _bearer_token(authorization)
+    if not token:
         return None
-    try:
-        return await get_current_user(authorization)
-    except AppError:
-        return None
+    decoded = decode_firebase_token(token)
+    return _uid_from_claims(decoded)
