@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -12,13 +12,8 @@ async def _mock_current_user() -> str:
     return "user123"
 
 
-@patch("app.api.v1.endpoints.notifications._get_db")
-def test_register_fcm_token_success(mock_get_db):
-    mock_db = MagicMock()
-    mock_doc = MagicMock()
-    mock_get_db.return_value = mock_db
-    mock_db.collection.return_value.document.return_value = mock_doc
-
+@patch("app.api.v1.endpoints.notifications.save_fcm_token")
+def test_register_fcm_token_success(mock_save):
     app.dependency_overrides[get_current_user] = _mock_current_user
     try:
         response = client.post(
@@ -32,7 +27,7 @@ def test_register_fcm_token_success(mock_get_db):
     assert response.status_code == 200
     body = response.json()
     assert body["success"] is True
-    mock_doc.set.assert_called_once()
+    mock_save.assert_called_once_with("user123", "fcm_token_abc123")
 
 
 def test_register_fcm_token_missing_auth():
