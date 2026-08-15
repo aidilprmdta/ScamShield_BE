@@ -4,7 +4,7 @@ Pydantic schemas untuk request/response endpoint /analyze/*.
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ScanType(str, Enum):
@@ -59,7 +59,9 @@ class RedFlag(BaseModel):
 
 
 class AnalysisResult(BaseModel):
-    scan_id: Optional[str] = None
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    scan_id: Optional[str] = Field(default=None, validation_alias="scanId")
     type: ScanType
     input_summary: str
     risk_score: int = Field(..., ge=0, le=100)
