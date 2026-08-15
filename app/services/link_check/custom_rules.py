@@ -60,10 +60,19 @@ async def expand_shortlink(url: str) -> str:
             timeout=settings.http_timeout_seconds, follow_redirects=True
         ) as client:
             resp = await client.head(url)
+            if resp.status_code >= 400:
+                resp = await client.get(url)
             return str(resp.url)
     except httpx.HTTPError as exc:
         logger.warning("Gagal expand shortlink %s: %s", url, exc)
-        return url
+        try:
+            async with httpx.AsyncClient(
+                timeout=settings.http_timeout_seconds, follow_redirects=True
+            ) as client:
+                resp = await client.get(url)
+                return str(resp.url)
+        except httpx.HTTPError:
+            return url
 
 
 def evaluate_custom_rules(original_url: str, resolved_url: str) -> list[str]:
