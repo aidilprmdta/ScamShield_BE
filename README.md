@@ -37,10 +37,11 @@ cp .env.example .env
 # isi GEMINI_API_KEY, GOOGLE_SAFE_BROWSING_API_KEY, FIREBASE_SERVICE_ACCOUNT_JSON
 
 # 4. Jalankan server (auto-reload untuk development)
-uvicorn app.main:app --reload
+# --host 0.0.0.0 agar bisa diakses dari device di jaringan yang sama
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
-# Server berjalan di http://127.0.0.1:8000
-# Swagger docs: http://127.0.0.1:8000/docs
+# Server berjalan di http://192.168.1.8:8000 (ganti IP sesuai mesin Anda)
+# Swagger docs: http://192.168.1.8:8000/docs
 ```
 
 ## 3. Environment Variables
