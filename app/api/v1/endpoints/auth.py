@@ -1,5 +1,4 @@
 from typing import Any, Optional
-from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Header, Depends
@@ -11,10 +10,7 @@ from app.models.auth_schema import (
     AuthResponse,
     AuthTokens,
     ChangePasswordRequest,
-<<<<<<< HEAD
-=======
     ChangePasswordResponse,
->>>>>>> 7d5489a61e7da784a79ec46802ae4f10c5061d99
     GoogleLoginRequest,
     LoginRequest,
     RefreshTokenRequest,
@@ -22,15 +18,17 @@ from app.models.auth_schema import (
     UpdateProfileRequest,
     UpdateProfileResponse,
 )
+from app.core.logging import get_logger
 from app.core.rate_limit import limiter
-from app.core.security import get_current_user
+from app.core.security import decode_firebase_token, get_current_user
+from app.repositories.firestore_repository import is_admin_user
 from app.utils.exceptions import UnauthorizedError, ValidationAppError
 
-import firebase_admin
 from firebase_admin import auth as firebase_auth
 from fastapi import Request
 
 router = APIRouter()
+logger = get_logger(__name__)
 
 
 def _parse_identity_toolkit_error(payload: Any) -> str:
@@ -45,16 +43,29 @@ def _parse_identity_toolkit_error(payload: Any) -> str:
     }
     """
     try:
-        return payload.get("error", {}).get("message", "UNKNOWN_ERROR")
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(error, dict):
+            return str(error.get("message") or "UNKNOWN_ERROR")
+        if isinstance(error, str) and error.strip():
+            return error
+        return "UNKNOWN_ERROR"
     except Exception:  # noqa: BLE001
         return "UNKNOWN_ERROR"
+
+
+def _normalize_firebase_code(message: str) -> str:
+    msg = (message or "").upper().strip()
+    if ":" in msg:
+        msg = msg.split(":", 1)[0].strip()
+    return msg
 
 
 def _map_error_message_to_http_status(message: str) -> None:
     """
     Melempar AppError yang sudah punya handler global.
     """
-    msg = (message or "").upper()
+    raw = message or "UNKNOWN_ERROR"
+    msg = _normalize_firebase_code(raw)
 
     if msg in {"EMAIL_EXISTS"}:
         raise ValidationAppError("Email sudah terdaftar.")
@@ -65,20 +76,17 @@ def _map_error_message_to_http_status(message: str) -> None:
     if msg in {"WEAK_PASSWORD"}:
         raise ValidationAppError("Password terlalu lemah. Minimal 6 karakter.")
 
-    # Login errors
-    if msg in {"INVALID_LOGIN_CREDENTIALS", "INVALID_PASSWORD"}:
+    if msg in {"INVALID_LOGIN_CREDENTIALS", "INVALID_PASSWORD", "EMAIL_NOT_FOUND"}:
         raise UnauthorizedError("Email atau password salah.")
-
-    if msg in {"EMAIL_NOT_FOUND"}:
-        raise UnauthorizedError("Email tidak ditemukan.")
 
     if msg in {"USER_DISABLED"}:
         raise UnauthorizedError("User dinonaktifkan.")
 
     if msg in {"OPERATION_NOT_ALLOWED", "PASSWORD_LOGIN_DISABLED"}:
         raise ValidationAppError(
-            "Metode login belum diaktifkan di Firebase. Aktifkan Email/Password atau Google di Firebase Console "
-            "(project scamshieldai-9de2170b)."
+            "Metode login belum diaktifkan di Firebase Authentication. "
+            "Buka Console project 'scamshieldai-9de2170b' > Authentication > "
+            "Sign-in method, lalu aktifkan Email/Password dan Google."
         )
 
     if msg in {"INVALID_IDP_RESPONSE", "INVALID_ID_TOKEN", "CREDENTIAL_TOO_OLD_LOGIN_AGAIN"}:
@@ -91,84 +99,119 @@ def _map_error_message_to_http_status(message: str) -> None:
             "Email/Password dan Google Sign-In."
         )
 
-    # Fallback
+    if "API KEY" in raw.upper() or msg in {"API_KEY_INVALID", "API_KEY_NOT_VALID"}:
+        raise ValidationAppError(
+            "API key Firebase backend tidak valid. Gunakan Web API Key dari "
+            "Firebase Console > Project settings (bukan key yang di-restrict Android saja)."
+        )
+
+    if "BLOCKED" in raw.upper() or "PERMISSION_DENIED" in raw.upper():
+        raise ValidationAppError(
+            "API key Firebase menolak permintaan dari server. Di Google Cloud Console, "
+            "hapus Application restriction Android pada Web API key, atau buat key baru tanpa restriction."
+        )
+
     raise ValidationAppError(f"Login/Register gagal: {message}")
+
+
+def _identity_toolkit_keys() -> list[str]:
+    settings = get_settings()
+    keys: list[str] = []
+    for raw in (settings.firebase_web_api_key, settings.firebase_web_api_key_fallback):
+        if not isinstance(raw, str):
+            continue
+        key = raw.strip()
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+_RETRY_NEXT_KEY = {
+    "INVALID_LOGIN_CREDENTIALS",
+    "INVALID_PASSWORD",
+    "EMAIL_NOT_FOUND",
+    "OPERATION_NOT_ALLOWED",
+    "PASSWORD_LOGIN_DISABLED",
+    "CONFIGURATION_NOT_FOUND",
+    "PROJECT_PUBLIC_ID_NOT_FOUND",
+    "API_KEY_INVALID",
+    "INVALID_IDP_RESPONSE",
+    "INVALID_ID_TOKEN",
+}
+
+
+async def _identity_toolkit_post(path: str, json_body: dict[str, Any]) -> dict[str, Any]:
+    keys = _identity_toolkit_keys()
+    if not keys:
+        raise ValidationAppError("Server belum dikonfigurasi untuk Firebase Auth (FIREBASE_WEB_API_KEY).")
+
+    settings = get_settings()
+    timeout = max(settings.http_timeout_seconds, 20)
+    last_message = "UNKNOWN_ERROR"
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for index, key in enumerate(keys):
+            url = f"https://identitytoolkit.googleapis.com/v1/{path}?key={key}"
+            resp = await client.post(url, json=json_body)
+            if resp.status_code == 200:
+                return resp.json()
+            data = resp.json() if resp.content else {}
+            last_message = _parse_identity_toolkit_error(data)
+            code = _normalize_firebase_code(last_message)
+            can_retry = index < len(keys) - 1 and (
+                code in _RETRY_NEXT_KEY
+                or "API KEY" in last_message.upper()
+                or "BLOCKED" in last_message.upper()
+            )
+            logger.warning("Identity Toolkit %s key[%s] gagal: %s", path, index, last_message)
+            if can_retry:
+                continue
+            _map_error_message_to_http_status(last_message)
+
+    _map_error_message_to_http_status(last_message)
+    raise ValidationAppError(f"Login/Register gagal: {last_message}")
+
+
+def _tokens_from_identity_toolkit(body: dict[str, Any]) -> AuthTokens:
+    id_token = body.get("idToken")
+    refresh = body.get("refreshToken")
+    local_id = body.get("localId")
+    if not id_token or not refresh or not local_id:
+        raise ValidationAppError("Respons autentikasi tidak lengkap. Silakan coba lagi.")
+    return AuthTokens(
+        idToken=id_token,
+        refreshToken=refresh,
+        localId=local_id,
+        email=body.get("email"),
+    )
 
 
 @router.post("/auth/register", response_model=AuthResponse, summary="Register pengguna (Firebase email/password)")
 @limiter.limit("5/minute")
 async def register(request: Request, payload: RegisterRequest) -> AuthResponse:
-    settings = get_settings()
-
-    if not settings.firebase_web_api_key:
-        raise ValidationAppError("Server belum dikonfigurasi untuk Firebase Auth (FIREBASE_WEB_API_KEY).")
-
-    url = (
-        "https://identitytoolkit.googleapis.com/v1/accounts:signUp"
-        f"?key={settings.firebase_web_api_key}"
+    body = await _identity_toolkit_post(
+        "accounts:signUp",
+        {
+            "email": payload.email,
+            "password": payload.password,
+            "returnSecureToken": True,
+        },
     )
-
-    async with httpx.AsyncClient(timeout=settings.http_timeout_seconds) as client:
-        resp = await client.post(
-            url,
-            json={
-                "email": payload.email,
-                "password": payload.password,
-                "returnSecureToken": True,
-            },
-        )
-
-    if resp.status_code != 200:
-        data = resp.json() if resp.content else {}
-        message = _parse_identity_toolkit_error(data)
-        _map_error_message_to_http_status(message)
-
-    body = resp.json()
-    tokens = AuthTokens(
-        idToken=body["idToken"],
-        refreshToken=body["refreshToken"],
-        localId=body["localId"],
-        email=body.get("email"),
-    )
-    return AuthResponse(data=tokens)
+    return AuthResponse(data=_tokens_from_identity_toolkit(body))
 
 
 @router.post("/auth/login", response_model=AuthResponse, summary="Login pengguna (Firebase email/password)")
-@limiter.limit("10/minute")
+@limiter.limit("30/minute")
 async def login(request: Request, payload: LoginRequest) -> AuthResponse:
-    settings = get_settings()
-
-    if not settings.firebase_web_api_key:
-        raise ValidationAppError("Server belum dikonfigurasi untuk Firebase Auth (FIREBASE_WEB_API_KEY).")
-
-    url = (
-        "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
-        f"?key={settings.firebase_web_api_key}"
+    body = await _identity_toolkit_post(
+        "accounts:signInWithPassword",
+        {
+            "email": payload.email,
+            "password": payload.password,
+            "returnSecureToken": True,
+        },
     )
-
-    async with httpx.AsyncClient(timeout=settings.http_timeout_seconds) as client:
-        resp = await client.post(
-            url,
-            json={
-                "email": payload.email,
-                "password": payload.password,
-                "returnSecureToken": True,
-            },
-        )
-
-    if resp.status_code != 200:
-        data = resp.json() if resp.content else {}
-        message = _parse_identity_toolkit_error(data)
-        _map_error_message_to_http_status(message)
-
-    body = resp.json()
-    tokens = AuthTokens(
-        idToken=body["idToken"],
-        refreshToken=body["refreshToken"],
-        localId=body["localId"],
-        email=body.get("email"),
-    )
-    return AuthResponse(data=tokens)
+    return AuthResponse(data=_tokens_from_identity_toolkit(body))
 
 
 @router.post("/auth/google", response_model=AuthResponse, summary="Login/Register via Google ID token")
@@ -178,71 +221,59 @@ async def google_login(payload: GoogleLoginRequest) -> AuthResponse:
     lalu menukarnya ke Firebase ID token via Identity Toolkit signInWithIdp.
     Jika user belum ada di Firebase Auth, otomatis di-create (register).
     """
-    settings = get_settings()
-
-    if not settings.firebase_web_api_key:
-        raise ValidationAppError("Server belum dikonfigurasi untuk Firebase Auth (FIREBASE_WEB_API_KEY).")
-
-    url = (
-        "https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp"
-        f"?key={settings.firebase_web_api_key}"
+    token = payload.id_token.strip()
+    if token.count(".") != 2:
+        raise ValidationAppError("Token Google tidak valid. Silakan coba lagi.")
+    body = await _identity_toolkit_post(
+        "accounts:signInWithIdp",
+        {
+            "postBody": f"id_token={token}&providerId=google.com",
+            "requestUri": "https://localhost",
+            "returnIdpCredential": True,
+            "returnSecureToken": True,
+        },
     )
-
-    async with httpx.AsyncClient(timeout=settings.http_timeout_seconds) as client:
-        encoded_token = quote(payload.id_token, safe="")
-        resp = await client.post(
-            url,
-            json={
-                "postBody": f"id_token={encoded_token}&providerId=google.com",
-                "requestUri": "https://localhost",
-                "returnIdpCredential": True,
-                "returnSecureToken": True,
-            },
-        )
-
-    if resp.status_code != 200:
-        data = resp.json() if resp.content else {}
-        message = _parse_identity_toolkit_error(data)
-        _map_error_message_to_http_status(message)
-
-    body = resp.json()
-    tokens = AuthTokens(
-        idToken=body["idToken"],
-        refreshToken=body["refreshToken"],
-        localId=body["localId"],
-        email=body.get("email"),
-    )
-    return AuthResponse(data=tokens)
+    return AuthResponse(data=_tokens_from_identity_toolkit(body))
 
 
 @router.post("/auth/refresh", response_model=AuthResponse, summary="Refresh ID token menggunakan refresh token")
 @limiter.limit("20/minute")
 async def refresh_token(request: Request, payload: RefreshTokenRequest) -> AuthResponse:
-    settings = get_settings()
-
-    if not settings.firebase_web_api_key:
+    keys = _identity_toolkit_keys()
+    if not keys:
         raise ValidationAppError("Server belum dikonfigurasi untuk Firebase Auth (FIREBASE_WEB_API_KEY).")
 
-    url = f"https://securetoken.googleapis.com/v1/token?key={settings.firebase_web_api_key}"
+    settings = get_settings()
+    last_ok = False
+    body: dict[str, Any] = {}
+    async with httpx.AsyncClient(timeout=max(settings.http_timeout_seconds, 20)) as client:
+        for key in keys:
+            resp = await client.post(
+                f"https://securetoken.googleapis.com/v1/token?key={key}",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": payload.refresh_token,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            if resp.status_code == 200:
+                body = resp.json()
+                last_ok = True
+                break
 
-    async with httpx.AsyncClient(timeout=settings.http_timeout_seconds) as client:
-        resp = await client.post(
-            url,
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": payload.refresh_token,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-
-    if resp.status_code != 200:
+    if not last_ok:
         raise UnauthorizedError("Refresh token tidak valid atau kedaluwarsa.")
 
-    body = resp.json()
+    id_token = body.get("id_token")
+    refresh = body.get("refresh_token")
+    user_id = body.get("user_id")
+    if not id_token or not refresh or not user_id:
+        raise UnauthorizedError("Refresh token tidak valid atau kedaluwarsa.")
+
     tokens = AuthTokens(
-        idToken=body["id_token"],
-        refreshToken=body["refresh_token"],
-        localId=body["user_id"],
+        idToken=id_token,
+        refreshToken=refresh,
+        localId=user_id,
         email=None,
     )
     return AuthResponse(data=tokens)
@@ -264,17 +295,13 @@ async def me(
         raise UnauthorizedError("Header Authorization Bearer <token> wajib disertakan.")
 
     token = authorization.split(" ", 1)[1].strip()
+    decoded = decode_firebase_token(token)
 
-    try:
-        decoded = firebase_auth.verify_id_token(token)
-    except Exception as exc:  # noqa: BLE001
-        raise UnauthorizedError("Token tidak valid atau kedaluwarsa.") from exc
-
-    display_name = None
+    display_name = decoded.get("name")
     email = decoded.get("email")
     try:
         user_record = firebase_auth.get_user(user_id)
-        display_name = user_record.display_name
+        display_name = user_record.display_name or display_name
         email = user_record.email or email
     except Exception:  # noqa: BLE001
         pass
@@ -284,7 +311,8 @@ async def me(
             uid=user_id,
             email=email,
             display_name=display_name,
-            admin=bool(decoded.get("admin", False)),
+            admin=bool(decoded.get("admin", False))
+            or is_admin_user(user_id, email if isinstance(email, str) else None),
         )
     )
 
@@ -295,9 +323,10 @@ async def update_profile(
     request: Request,
     payload: UpdateProfileRequest,
     user_id: str = Depends(get_current_user),
+    authorization: Optional[str] = Header(default=None),
 ) -> UpdateProfileResponse:
     """
-    Update display_name dan/atau email via Firebase Admin SDK.
+    Update display_name dan/atau email via Identity Toolkit (project yang sama dengan token).
     """
     display_name = payload.display_name.strip() if payload.display_name else None
     email = payload.email.strip().lower() if payload.email else None
@@ -311,109 +340,76 @@ async def update_profile(
     if email is not None and ("@" not in email or "." not in email.split("@")[-1]):
         raise ValidationAppError("Email tidak valid.")
 
-    update_kwargs: dict[str, Any] = {}
+    token = None
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+    if not token:
+        raise UnauthorizedError("Header Authorization Bearer <token> wajib disertakan.")
+
+    update_body: dict[str, Any] = {"idToken": token, "returnSecureToken": True}
     if display_name is not None:
-        update_kwargs["display_name"] = display_name
+        update_body["displayName"] = display_name
     if email is not None:
-        update_kwargs["email"] = email
+        update_body["email"] = email
 
     try:
-        user_record = firebase_auth.update_user(user_id, **update_kwargs)
-    except firebase_auth.EmailAlreadyExistsError as exc:
-        raise ValidationAppError("Email sudah digunakan akun lain.") from exc
-    except firebase_auth.InvalidArgumentError as exc:
-        raise ValidationAppError("Data profil tidak valid.") from exc
+        body = await _identity_toolkit_post("accounts:update", update_body)
+    except ValidationAppError:
+        raise
     except Exception as exc:  # noqa: BLE001
-        raise ValidationAppError(f"Gagal memperbarui profil: {exc}") from exc
+        try:
+            update_kwargs: dict[str, Any] = {}
+            if display_name is not None:
+                update_kwargs["display_name"] = display_name
+            if email is not None:
+                update_kwargs["email"] = email
+            user_record = firebase_auth.update_user(user_id, **update_kwargs)
+            claims = user_record.custom_claims or {}
+            return UpdateProfileResponse(
+                data=AuthMeData(
+                    uid=user_record.uid,
+                    email=user_record.email,
+                    display_name=user_record.display_name,
+                    admin=bool(claims.get("admin", False))
+                    or is_admin_user(user_record.uid, user_record.email),
+                )
+            )
+        except firebase_auth.EmailAlreadyExistsError as admin_exc:
+            raise ValidationAppError("Email sudah digunakan akun lain.") from admin_exc
+        except Exception as admin_exc:  # noqa: BLE001
+            raise ValidationAppError(f"Gagal memperbarui profil: {exc}") from admin_exc
 
-    # Ambil admin claim dari custom claims
-    claims = user_record.custom_claims or {}
+    result_email = body.get("email") or email
+    result_name = body.get("displayName") or display_name
+    admin = False
+    new_token = body.get("idToken") or token
+    try:
+        decoded = decode_firebase_token(new_token)
+        admin = bool(decoded.get("admin", False))
+    except Exception:  # noqa: BLE001
+        pass
+
     return UpdateProfileResponse(
         data=AuthMeData(
-            uid=user_record.uid,
-            email=user_record.email,
-            display_name=user_record.display_name,
-            admin=bool(claims.get("admin", False)),
+            uid=body.get("localId") or user_id,
+            email=result_email,
+            display_name=result_name,
+            admin=admin or is_admin_user(user_id, result_email if isinstance(result_email, str) else None),
         )
     )
 
 
-<<<<<<< HEAD
-@router.post("/auth/change-password", response_model=dict, summary="Ubah password pengguna")
-=======
 @router.post(
     "/auth/change-password",
     response_model=ChangePasswordResponse,
     summary="Ubah kata sandi pengguna (email/password)",
 )
->>>>>>> 7d5489a61e7da784a79ec46802ae4f10c5061d99
 @limiter.limit("5/minute")
 async def change_password(
     request: Request,
     payload: ChangePasswordRequest,
     user_id: str = Depends(get_current_user),
-<<<<<<< HEAD
     authorization: Optional[str] = Header(default=None),
-) -> dict:
-    """
-    Ubah password user yang sudah login.
-    Verifikasi password lama, lalu update ke password baru.
-    """
-    settings = get_settings()
-
-    if not settings.firebase_web_api_key:
-        raise ValidationAppError("Server belum dikonfigurasi untuk Firebase Auth (FIREBASE_WEB_API_KEY).")
-
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise UnauthorizedError("Header Authorization Bearer <token> wajib disertakan.")
-
-    # Validasi input
-    if len(payload.new_password) < 6:
-        raise ValidationAppError("Password baru minimal 6 karakter.")
-
-    if payload.current_password == payload.new_password:
-        raise ValidationAppError("Password baru tidak boleh sama dengan password lama.")
-
-    # Ambil email user
-    try:
-        user_record = firebase_auth.get_user(user_id)
-        email = user_record.email
-        if not email:
-            raise ValidationAppError("Akun ini tidak memiliki email (mungkin login via Google).")
-    except Exception as exc:
-        raise ValidationAppError(f"Gagal mengambil data user: {exc}") from exc
-
-    # Verifikasi password lama dengan mencoba login
-    verify_url = (
-        "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
-        f"?key={settings.firebase_web_api_key}"
-    )
-
-    async with httpx.AsyncClient(timeout=settings.http_timeout_seconds) as client:
-        verify_resp = await client.post(
-            verify_url,
-            json={
-                "email": email,
-                "password": payload.current_password,
-                "returnSecureToken": False,
-            },
-        )
-
-    if verify_resp.status_code != 200:
-        data = verify_resp.json() if verify_resp.content else {}
-        message = _parse_identity_toolkit_error(data)
-        if "INVALID_PASSWORD" in message or "INVALID_LOGIN_CREDENTIALS" in message:
-            raise UnauthorizedError("Password lama salah.")
-        _map_error_message_to_http_status(message)
-
-    # Update password via Firebase Admin SDK
-    try:
-        firebase_auth.update_user(user_id, password=payload.new_password)
-    except Exception as exc:
-        raise ValidationAppError(f"Gagal mengubah password: {exc}") from exc
-
-    return {"success": True, "message": "Password berhasil diubah."}
-=======
 ) -> ChangePasswordResponse:
     """
     Alur Firebase Identity Toolkit:
@@ -421,8 +417,7 @@ async def change_password(
     2. Verifikasi kata sandi lama via signInWithPassword
     3. Update kata sandi via accounts:update
     """
-    settings = get_settings()
-    if not settings.firebase_web_api_key:
+    if not _identity_toolkit_keys():
         raise ValidationAppError("Server belum dikonfigurasi untuk Firebase Auth (FIREBASE_WEB_API_KEY).")
 
     new_password = payload.new_password.strip()
@@ -432,67 +427,51 @@ async def change_password(
     if new_password == current_password:
         raise ValidationAppError("Kata sandi baru harus berbeda dari kata sandi saat ini.")
 
+    email = ""
+    providers: list[str] = []
     try:
         user_record = firebase_auth.get_user(user_id)
-    except Exception as exc:  # noqa: BLE001
-        raise UnauthorizedError("Pengguna tidak ditemukan.") from exc
+        email = (user_record.email or "").strip()
+        providers = [p.provider_id for p in (user_record.provider_data or [])]
+    except Exception:  # noqa: BLE001
+        if authorization and authorization.lower().startswith("bearer "):
+            decoded = decode_firebase_token(authorization.split(" ", 1)[1].strip())
+            email = (decoded.get("email") or "").strip()
+        if not email:
+            raise UnauthorizedError("Pengguna tidak ditemukan.")
 
-    providers = [p.provider_id for p in (user_record.provider_data or [])]
-    if "password" not in providers:
+    if providers and "password" not in providers:
         raise ValidationAppError(
             "Akun ini masuk dengan Google. Kata sandi tidak dapat diubah di aplikasi. "
             "Kelola keamanan melalui akun Google Anda."
         )
 
-    email = (user_record.email or "").strip()
     if not email:
         raise ValidationAppError("Email akun tidak ditemukan. Tidak dapat mengubah kata sandi.")
 
-    sign_in_url = (
-        "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
-        f"?key={settings.firebase_web_api_key}"
-    )
-    update_url = (
-        f"https://identitytoolkit.googleapis.com/v1/accounts:update"
-        f"?key={settings.firebase_web_api_key}"
-    )
-
-    async with httpx.AsyncClient(timeout=settings.http_timeout_seconds) as client:
-        sign_in_resp = await client.post(
-            sign_in_url,
-            json={
+    try:
+        sign_in_payload = await _identity_toolkit_post(
+            "accounts:signInWithPassword",
+            {
                 "email": email,
                 "password": current_password,
                 "returnSecureToken": True,
             },
         )
-        sign_in_payload = sign_in_resp.json()
-        if sign_in_resp.status_code >= 400:
-            message = _parse_identity_toolkit_error(sign_in_payload)
-            if message.upper() in {"INVALID_LOGIN_CREDENTIALS", "INVALID_PASSWORD"}:
-                raise UnauthorizedError("Kata sandi saat ini salah.")
-            _map_error_message_to_http_status(message)
+    except UnauthorizedError as exc:
+        raise UnauthorizedError("Kata sandi saat ini salah.") from exc
+    id_token = sign_in_payload.get("idToken")
+    if not id_token:
+        raise ValidationAppError("Gagal memverifikasi kata sandi saat ini.")
 
-        id_token = sign_in_payload.get("idToken")
-        if not id_token:
-            raise ValidationAppError("Gagal memverifikasi kata sandi saat ini.")
-
-        update_resp = await client.post(
-            update_url,
-            json={
-                "idToken": id_token,
-                "password": new_password,
-                "returnSecureToken": True,
-            },
-        )
-        update_payload = update_resp.json()
-        if update_resp.status_code >= 400:
-            message = _parse_identity_toolkit_error(update_payload)
-            if message.upper() in {"CREDENTIAL_TOO_OLD_LOGIN_AGAIN"}:
-                raise ValidationAppError(
-                    "Sesi login terlalu lama. Masuk kembali, lalu coba ubah kata sandi."
-                )
-            _map_error_message_to_http_status(message)
+    update_payload = await _identity_toolkit_post(
+        "accounts:update",
+        {
+            "idToken": id_token,
+            "password": new_password,
+            "returnSecureToken": True,
+        },
+    )
 
     tokens = AuthTokens(
         idToken=update_payload.get("idToken") or id_token,
@@ -504,5 +483,3 @@ async def change_password(
         raise ValidationAppError("Kata sandi diubah, tetapi token sesi tidak lengkap. Silakan login ulang.")
 
     return ChangePasswordResponse(data=tokens)
-
->>>>>>> 7d5489a61e7da784a79ec46802ae4f10c5061d99
