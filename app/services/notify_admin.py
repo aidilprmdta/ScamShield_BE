@@ -16,36 +16,50 @@ from app.repositories.firestore_repository import (
 logger = get_logger(__name__)
 
 
-def _collect_admin_tokens() -> list[str]:
+def _list_admin_uids() -> list[str]:
+    uids = list(local_store.list_admin_uids())
     if _should_use_local():
-        tokens = []
-        for uid in local_store.list_admin_uids():
-            token = local_store.get_fcm_token(uid)
-            if token:
-                tokens.append(token)
-        return tokens
-
+        return uids
     try:
         db = _get_db()
-        admin_uids = [doc.id for doc in db.collection("admin_users").stream()]
-        tokens = []
-        for uid in admin_uids:
-            token_doc = db.collection("fcm_tokens").document(uid).get()
-            if token_doc.exists:
-                fcm_token = (token_doc.to_dict() or {}).get("fcm_token")
-                if fcm_token:
-                    tokens.append(fcm_token)
-        return tokens
+        for doc in db.collection("admin_users").stream():
+            if doc.id not in uids:
+                uids.append(doc.id)
+        return uids
     except Exception as exc:  # noqa: BLE001
         if _is_firestore_unavailable(exc):
             _mark_local_fallback(exc)
-            tokens = []
-            for uid in local_store.list_admin_uids():
-                token = local_store.get_fcm_token(uid)
-                if token:
-                    tokens.append(token)
-            return tokens
-        raise
+        else:
+            logger.warning("Gagal memuat daftar admin: %s", exc)
+        return uids
+
+
+def _token_for_uid(uid: str) -> str | None:
+    token = local_store.get_fcm_token(uid)
+    if token:
+        return token
+    if _should_use_local():
+        return None
+    try:
+        db = _get_db()
+        token_doc = db.collection("fcm_tokens").document(uid).get()
+        if token_doc.exists:
+            return (token_doc.to_dict() or {}).get("fcm_token")
+    except Exception as exc:  # noqa: BLE001
+        if _is_firestore_unavailable(exc):
+            _mark_local_fallback(exc)
+        else:
+            logger.warning("Gagal memuat FCM token admin %s: %s", uid, exc)
+    return None
+
+
+def _collect_admin_tokens() -> list[str]:
+    tokens: list[str] = []
+    for uid in _list_admin_uids():
+        token = _token_for_uid(uid)
+        if token and token not in tokens:
+            tokens.append(token)
+    return tokens
 
 
 def notify_admins_new_report(report_id: str, report_type: str, content: str) -> None:
@@ -53,7 +67,7 @@ def notify_admins_new_report(report_id: str, report_type: str, content: str) -> 
     title = f"Laporan Baru [{report_type}]"
 
     try:
-        for uid in local_store.list_admin_uids():
+        for uid in _list_admin_uids():
             add_user_notification(
                 uid=uid,
                 title=title,
