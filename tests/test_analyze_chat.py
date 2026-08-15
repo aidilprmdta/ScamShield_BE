@@ -51,3 +51,23 @@ def test_analyze_chat_low_ocr_confidence_rejected():
     )
     assert response.status_code == 422
     assert "OCR" in response.json()["error"]["message"]
+
+
+def test_analyze_chat_invalid_bearer_returns_401():
+    response = client.post(
+        "/api/v1/analyze/chat",
+        json={"text": "Mohon segera masukkan kode OTP Anda untuk verifikasi akun BCA."},
+        headers={"Authorization": "Bearer not-a-valid-jwt"},
+    )
+    assert response.status_code == 401
+    assert response.headers.get("www-authenticate", "").lower().startswith("bearer")
+
+
+def test_analyze_chat_without_token_still_allowed():
+    with patch("app.api.v1.endpoints.analyze_chat.analyze_with_gemini", new_callable=AsyncMock) as mock_gemini:
+        mock_gemini.return_value = MOCK_LLM_RESULT
+        response = client.post(
+            "/api/v1/analyze/chat",
+            json={"text": "Mohon segera masukkan kode OTP Anda untuk verifikasi akun BCA."},
+        )
+    assert response.status_code == 200
