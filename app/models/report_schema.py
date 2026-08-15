@@ -21,8 +21,13 @@ class VerifiedStatus(str, Enum):
 
 class CommunityReportRequest(BaseModel):
     type: ReportType
-    content: str = Field(..., description="Isi laporan: teks chat, URL, atau deskripsi modus")
-    note: str | None = Field(default=None, description="Catatan tambahan dari pelapor")
+    content: str = Field(
+        ...,
+        min_length=3,
+        max_length=8000,
+        description="Isi laporan: teks chat, URL, atau deskripsi modus",
+    )
+    note: str | None = Field(default=None, max_length=2000, description="Catatan tambahan dari pelapor")
 
 
 class CommunityReportResult(BaseModel):
