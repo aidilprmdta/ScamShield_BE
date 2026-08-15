@@ -2,7 +2,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
+from app.core.security import decode_firebase_token
 from app.main import app
+from app.utils.exceptions import UnauthorizedError
 
 client = TestClient(app)
 
@@ -132,3 +134,43 @@ def test_register_short_password():
         json={"email": "test@example.com", "password": "12345"},
     )
     assert response.status_code == 422
+
+
+def test_me_without_token_returns_401():
+    response = client.get("/api/v1/auth/me")
+    assert response.status_code == 401
+
+
+def test_me_invalid_token_returns_401():
+    response = client.get("/api/v1/auth/me", headers={"Authorization": "Bearer not-a-valid-jwt"})
+    assert response.status_code == 401
+    assert response.headers.get("www-authenticate", "").lower().startswith("bearer")
+
+
+def test_decode_malformed_token_raises_unauthorized():
+    try:
+        decode_firebase_token("not-a-valid-jwt")
+        assert False, "token rusak harus ditolak"
+    except UnauthorizedError:
+        pass
+
+
+@patch("app.api.v1.endpoints.auth.httpx.AsyncClient")
+def test_google_login_does_not_encode_jwt_dots(mock_client_cls):
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = MOCK_REGISTER_RESPONSE
+    mock_response.content = b"ok"
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client_cls.return_value = mock_client
+
+    google_jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkifQ.signature"
+    response = client.post("/api/v1/auth/google", json={"id_token": google_jwt})
+    assert response.status_code == 200
+    sent_json = mock_client.post.call_args.kwargs.get("json") or mock_client.post.call_args[1].get("json")
+    assert "id_token=eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkifQ.signature&providerId=google.com" in sent_json["postBody"]
+    assert "%2E" not in sent_json["postBody"]
