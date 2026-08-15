@@ -1,6 +1,6 @@
 """
 Entry point FastAPI — ScamShield AI Backend.
-Menjalankan: uvicorn app.main:app --reload
+Menjalankan: uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 """
 from contextlib import asynccontextmanager
 
