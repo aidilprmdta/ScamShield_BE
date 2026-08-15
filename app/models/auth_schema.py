@@ -1,16 +1,26 @@
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class RegisterRequest(BaseModel):
     email: str = Field(..., description="Email pengguna")
     password: str = Field(..., min_length=6, description="Password pengguna (min 6 karakter)")
 
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return value.strip().lower()
+
 
 class LoginRequest(BaseModel):
     email: str = Field(..., description="Email pengguna")
-    password: str = Field(..., description="Password pengguna")
+    password: str = Field(..., min_length=1, description="Password pengguna")
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return value.strip().lower()
 
 
 class AuthTokens(BaseModel):
@@ -27,11 +37,11 @@ class AuthResponse(BaseModel):
 
 
 class GoogleLoginRequest(BaseModel):
-    id_token: str = Field(..., description="Google ID token dari Credential Manager / Google Sign-In")
+    id_token: str = Field(..., min_length=20, description="Google ID token dari Credential Manager / Google Sign-In")
 
 
 class RefreshTokenRequest(BaseModel):
-    refresh_token: str = Field(..., description="Firebase refresh token")
+    refresh_token: str = Field(..., min_length=8, description="Firebase refresh token")
 
 
 class AuthMeData(BaseModel):
@@ -62,24 +72,12 @@ class UpdateProfileResponse(BaseModel):
     message: str = "Profil berhasil diperbarui."
 
 
-<<<<<<< HEAD
-
-class ChangePasswordRequest(BaseModel):
-    current_password: str = Field(..., description="Password saat ini")
-    new_password: str = Field(..., min_length=6, description="Password baru (min 6 karakter)")
-=======
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(..., min_length=1, description="Kata sandi saat ini")
     new_password: str = Field(..., min_length=6, description="Kata sandi baru (min 6 karakter)")
->>>>>>> 7d5489a61e7da784a79ec46802ae4f10c5061d99
 
 
 class ChangePasswordResponse(BaseModel):
     success: bool = True
-<<<<<<< HEAD
-    message: str = "Password berhasil diubah."
-=======
     data: AuthTokens
     message: str = "Kata sandi berhasil diubah."
-
->>>>>>> 7d5489a61e7da784a79ec46802ae4f10c5061d99
