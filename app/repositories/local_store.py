@@ -17,6 +17,7 @@ logger = get_logger(__name__)
 _LOCK = threading.Lock()
 _DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 _STORE_PATH = _DATA_DIR / "local_store.json"
+_EDUCATION_SEED_PATH = _DATA_DIR / "education_seed.json"
 
 _DEFAULT: dict[str, Any] = {
     "scan_history": {},
@@ -173,15 +174,45 @@ def upsert_admin_user(uid: str, email: str) -> None:
         _write(data)
 
 
+def education_from_seed(category: Optional[str] = None) -> list[dict[str, Any]]:
+    if not _EDUCATION_SEED_PATH.exists():
+        return []
+    try:
+        raw = json.loads(_EDUCATION_SEED_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("Gagal membaca education_seed.json")
+        return []
+    items: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        doc = dict(item)
+        if category and doc.get("category") != category:
+            continue
+        items.append(doc)
+    items.sort(key=lambda d: d.get("publishedAt") or d.get("published_at") or "", reverse=True)
+    return items
+
+
+def get_education_from_seed(content_id: str) -> Optional[dict[str, Any]]:
+    for item in education_from_seed():
+        if item.get("id") == content_id:
+            return item
+    return None
+
+
 def list_education_content(category: Optional[str] = None) -> list[dict[str, Any]]:
     with _LOCK:
         data = _ensure_store()
+        store_items = data["education_content"]
+        if not store_items:
+            return education_from_seed(category)
         items = []
-        for doc_id, doc in data["education_content"].items():
+        for doc_id, doc in store_items.items():
             if category and doc.get("category") != category:
                 continue
             items.append({**doc, "id": doc_id})
-        items.sort(key=lambda d: d.get("publishedAt") or "", reverse=True)
+        items.sort(key=lambda d: d.get("publishedAt") or d.get("published_at") or "", reverse=True)
         return items
 
 
@@ -189,9 +220,9 @@ def get_education_content(content_id: str) -> Optional[dict[str, Any]]:
     with _LOCK:
         data = _ensure_store()
         doc = data["education_content"].get(content_id)
-        if not doc:
-            return None
-        return {**doc, "id": content_id}
+        if doc:
+            return {**doc, "id": content_id}
+    return get_education_from_seed(content_id)
 
 
 def get_community_report(report_id: str) -> Optional[dict[str, Any]]:
