@@ -47,6 +47,7 @@ def test_change_password_success():
             with patch("app.api.v1.endpoints.auth.httpx.AsyncClient", return_value=mock_client):
                 with patch("app.api.v1.endpoints.auth.get_settings") as mock_settings:
                     mock_settings.return_value.firebase_web_api_key = "test-key"
+                    mock_settings.return_value.firebase_web_api_key_fallback = ""
                     mock_settings.return_value.http_timeout_seconds = 10
                     response = client.post(
                         "/api/v1/auth/change-password",
