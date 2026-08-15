@@ -60,7 +60,18 @@ def init_firebase() -> None:
         else:
             cred = credentials.Certificate(_resolve_service_account_path(raw))
         firebase_admin.initialize_app(cred)
-        logger.info("Firebase Admin SDK berhasil diinisialisasi.")
+        app_options = firebase_admin.get_app().project_id
+        logger.info("Firebase Admin SDK berhasil diinisialisasi (project=%s).", app_options)
+        expected_project = "scamshieldai-9de2170b"
+        if app_options and app_options != expected_project:
+            logger.warning(
+                "Project Admin SDK (%s) berbeda dari app Android (%s). "
+                "Token login dari FE tidak akan terverifikasi. "
+                "Ganti FIREBASE_SERVICE_ACCOUNT_JSON ke service account project %s.",
+                app_options,
+                expected_project,
+                expected_project,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.error("Gagal inisialisasi Firebase Admin SDK: %s", exc)
 
@@ -116,7 +127,67 @@ def _normalize_history_doc(doc: dict[str, Any]) -> dict[str, Any]:
     if scan_id:
         out["scan_id"] = scan_id
         out["scanId"] = scan_id
+    if not out.get("created_at") and out.get("createdAt"):
+        out["created_at"] = out["createdAt"]
+    created = out.get("created_at")
+    if created is not None and not isinstance(created, str):
+        out["created_at"] = created.isoformat() if hasattr(created, "isoformat") else str(created)
+    out.setdefault("created_at", "")
+    out.setdefault("explanation", "")
+    out.setdefault("recommendation_text", "")
+    out.setdefault("input_summary", "")
+    out.setdefault("red_flags", [])
+    out.setdefault("risk_score", 0)
+    out.setdefault("risk_level", "low")
+    out.setdefault("recommendation", "ignore")
+    out.setdefault("type", "chat")
     return out
+
+
+def _normalize_education_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    out = dict(doc)
+    if "thumbnailUrl" in out:
+        out.setdefault("thumbnail_url", out.get("thumbnailUrl"))
+    if "publishedAt" in out:
+        out.setdefault("published_at", out.get("publishedAt"))
+    out.setdefault("published_at", "")
+    questions = out.get("quiz_questions") or out.get("quizQuestions")
+    if questions:
+        normalized: list[dict[str, Any]] = []
+        for item in questions:
+            if not isinstance(item, dict):
+                continue
+            q = dict(item)
+            if "correctIndex" in q:
+                q.setdefault("correct_index", q["correctIndex"])
+            normalized.append(q)
+        out["quiz_questions"] = normalized
+    return out
+
+
+def is_admin_user(uid: str, email: Optional[str] = None) -> bool:
+    """Cek admin dari custom store / env, bukan hanya Firebase custom claim."""
+    settings = get_settings()
+    admin_uids = {x.strip() for x in (settings.admin_uids or "").split(",") if x.strip()}
+    admin_emails = {x.strip().lower() for x in (settings.admin_emails or "").split(",") if x.strip()}
+    if uid in admin_uids:
+        return True
+    if email and email.lower() in admin_emails:
+        return True
+    if uid in local_store.list_admin_uids():
+        return True
+    if _should_use_local():
+        return False
+    try:
+        db = _get_db()
+        snap = db.collection("admin_users").document(uid).get()
+        return bool(snap.exists)
+    except Exception as exc:  # noqa: BLE001
+        if _is_firestore_unavailable(exc):
+            _mark_local_fallback(exc)
+            return uid in local_store.list_admin_uids()
+        logger.warning("Gagal cek admin_users: %s", exc)
+        return False
 
 
 # ---------------- scan_history ----------------
@@ -383,36 +454,54 @@ def mark_user_notification_read(uid: str, notif_id: str) -> bool:
 # ---------------- education_content ----------------
 
 def list_education_content(category: Optional[str] = None) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
     if _should_use_local():
-        return local_store.list_education_content(category)
-    try:
-        db = _get_db()
-        query = db.collection(EDUCATION_CONTENT_COLLECTION)
-        if category:
-            query = query.where("category", "==", category)
-        query = query.order_by("publishedAt", direction=firestore.Query.DESCENDING)
-        return [d.to_dict() | {"id": d.id} for d in query.stream()]
-    except Exception as exc:  # noqa: BLE001
-        if _is_firestore_unavailable(exc):
-            _mark_local_fallback(exc)
-            return local_store.list_education_content(category)
-        raise UpstreamServiceError(f"Gagal memuat edukasi: {exc}") from exc
+        items = local_store.list_education_content(category)
+    else:
+        try:
+            db = _get_db()
+            query = db.collection(EDUCATION_CONTENT_COLLECTION)
+            if category:
+                query = query.where("category", "==", category)
+            try:
+                query = query.order_by("publishedAt", direction=firestore.Query.DESCENDING)
+                items = [d.to_dict() | {"id": d.id} for d in query.stream()]
+            except Exception:
+                raw = list(db.collection(EDUCATION_CONTENT_COLLECTION).stream())
+                items = [d.to_dict() | {"id": d.id} for d in raw]
+                if category:
+                    items = [d for d in items if d.get("category") == category]
+                items.sort(key=lambda d: d.get("publishedAt") or d.get("published_at") or "", reverse=True)
+        except Exception as exc:  # noqa: BLE001
+            if _is_firestore_unavailable(exc):
+                _mark_local_fallback(exc)
+                items = local_store.list_education_content(category)
+            else:
+                raise UpstreamServiceError(f"Gagal memuat edukasi: {exc}") from exc
+    if not items:
+        items = local_store.education_from_seed(category)
+    return [_normalize_education_doc(d) for d in items]
 
 
 def get_education_content(content_id: str) -> Optional[dict[str, Any]]:
+    doc: Optional[dict[str, Any]] = None
     if _should_use_local():
-        return local_store.get_education_content(content_id)
-    try:
-        db = _get_db()
-        doc = db.collection(EDUCATION_CONTENT_COLLECTION).document(content_id).get()
-        if not doc.exists:
-            return None
-        return doc.to_dict() | {"id": doc.id}
-    except Exception as exc:  # noqa: BLE001
-        if _is_firestore_unavailable(exc):
-            _mark_local_fallback(exc)
-            return local_store.get_education_content(content_id)
-        raise UpstreamServiceError(f"Gagal memuat detail edukasi: {exc}") from exc
+        doc = local_store.get_education_content(content_id)
+    else:
+        try:
+            db = _get_db()
+            snap = db.collection(EDUCATION_CONTENT_COLLECTION).document(content_id).get()
+            if snap.exists:
+                doc = snap.to_dict() | {"id": snap.id}
+        except Exception as exc:  # noqa: BLE001
+            if _is_firestore_unavailable(exc):
+                _mark_local_fallback(exc)
+                doc = local_store.get_education_content(content_id)
+            else:
+                raise UpstreamServiceError(f"Gagal memuat detail edukasi: {exc}") from exc
+    if not doc:
+        doc = local_store.get_education_from_seed(content_id)
+    return _normalize_education_doc(doc) if doc else None
 
 
 def now_iso() -> str:
