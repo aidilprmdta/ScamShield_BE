@@ -17,9 +17,15 @@ class Settings(BaseSettings):
 
     # Firebase
     firebase_service_account_json: str = ""
-    # Firebase Auth (Identity Toolkit) - untuk login/register email/password
-    # Tambahkan API key dari Firebase Console -> Authentication -> Identity Toolkit.
+    # Firebase Auth (Identity Toolkit) - harus Web API key project yang sama dengan app
     firebase_web_api_key: str = ""
+    # Key cadangan jika user tersimpan di project Firebase lama
+    firebase_web_api_key_fallback: str = ""
+    firebase_project_id: str = "scamshieldai-9de2170b"
+    firebase_project_ids: str = "scamshieldai-9de2170b,scamshield-ai-2026"
+    # Admin tanpa Firebase custom claim (comma-separated)
+    admin_uids: str = ""
+    admin_emails: str = ""
 
     # App
     environment: str = "development"
