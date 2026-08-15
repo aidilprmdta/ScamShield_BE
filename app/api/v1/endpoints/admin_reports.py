@@ -167,44 +167,8 @@ async def list_reports(
     limit: int = 50,
     _admin_uid: str = Depends(get_admin_user),
 ) -> ReportListResponse:
-<<<<<<< HEAD
-    from app.core.logging import get_logger
-    logger = get_logger(__name__)
-    
-    db = _get_db()
-    query = db.collection("community_reports").order_by("createdAt", direction=firestore.Query.DESCENDING)
-
-    if status_filter:
-        query = query.where("verifiedStatus", "==", status_filter)
-
-    docs = query.limit(limit).stream()
-
-    items = []
-    doc_count = 0
-    for doc in docs:
-        doc_count += 1
-        d = doc.to_dict() or {}
-        items.append(ReportListItem(
-            report_id=d.get("reportId", doc.id),
-            type=d.get("type", ""),
-            content=d.get("content", ""),
-            note=d.get("note"),
-            verified_status=d.get("verifiedStatus", "pending"),
-            reported_by=d.get("reportedBy"),
-            created_at=d.get("createdAt", ""),
-            verified_by=d.get("verifiedBy"),
-            verified_by_email=d.get("verifiedByEmail"),
-            verified_at=d.get("verifiedAt"),
-        ))
-    
-    logger.info(f"Admin reports query: found {doc_count} documents, status_filter={status_filter}")
-    if doc_count > 0:
-        logger.info(f"First report: {items[0].dict() if items else 'none'}")
-
-=======
     docs = list_community_reports(status_filter=status_filter, limit=limit)
     items = [_to_list_item(d) for d in docs]
->>>>>>> 7d5489a61e7da784a79ec46802ae4f10c5061d99
     return ReportListResponse(data=items, total=len(items))
 
 
