@@ -38,7 +38,7 @@ class NotFoundError(AppError):
 
 
 class UpstreamServiceError(AppError):
-    """Error saat memanggil layanan eksternal (Gemini, Safe Browsing, Firestore)."""
+    """Error saat memanggil layanan eksternal (Gemini, URLhaus, Firestore)."""
 
     status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     default_message = "Layanan eksternal sedang tidak tersedia. Silakan coba lagi."
