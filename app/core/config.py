@@ -12,9 +12,6 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = "gemini-flash-latest"
 
-    # Safe Browsing
-    google_safe_browsing_api_key: str = ""
-
     # Firebase
     firebase_service_account_json: str = ""
     # Firebase Auth (Identity Toolkit) - harus Web API key project yang sama dengan app
