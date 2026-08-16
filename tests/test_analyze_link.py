@@ -6,58 +6,47 @@ from app.main import app
 
 client = TestClient(app)
 
-MOCK_LLM_RESULT_SAFE = {
-    "risk_score": 15,
-    "risk_level": "low",
+MOCK_GEMINI_SAFE = {
+    "riskScore": 15,
+    "riskLevel": "low",
     "explanation": "Tautan mengarah ke domain resmi dan tidak ditemukan indikasi berbahaya.",
-    "red_flags": [],
-    "recommendation": "ignore",
-    "recommendation_text": "Aman untuk dibuka.",
-    "category": None,
+    "recommendation": "Aman untuk dibuka.",
 }
 
 
-@patch("app.api.v1.endpoints.analyze_link.analyze_with_gemini", new_callable=AsyncMock)
-@patch("app.api.v1.endpoints.analyze_link.check_url_reputation", new_callable=AsyncMock)
-@patch("app.api.v1.endpoints.analyze_link.run_link_heuristics", new_callable=AsyncMock)
-def test_analyze_link_safe(mock_heuristics, mock_reputation, mock_gemini):
-    mock_heuristics.return_value = {"resolved_url": "https://example.com", "flags": []}
-    mock_reputation.return_value = {
-        "is_flagged": False,
-        "threat_types": [],
-        "verdict": "Aman — tidak ditemukan di basis data ancaman.",
-    }
-    mock_gemini.return_value = MOCK_LLM_RESULT_SAFE
+@patch("app.api.v1.endpoints.analyze_link.analyze_gemini", new_callable=AsyncMock)
+@patch("app.api.v1.endpoints.analyze_link.check_urlhaus", new_callable=AsyncMock)
+@patch("app.api.v1.endpoints.analyze_link.check_heuristics")
+@patch("app.api.v1.endpoints.analyze_link.expand_short_link", new_callable=AsyncMock)
+def test_analyze_link_safe(mock_expand, mock_heuristics, mock_urlhaus, mock_gemini):
+    mock_expand.return_value = "https://example.com"
+    mock_heuristics.return_value = {"flags": [], "domain": "example.com"}
+    mock_urlhaus.return_value = False
+    mock_gemini.return_value = MOCK_GEMINI_SAFE
 
     response = client.post("/api/v1/analyze/link", json={"url": "https://example.com"})
 
     assert response.status_code == 200
     body = response.json()
     assert body["data"]["risk_level"] == "low"
-    assert body["data"]["link_reputation"]["safe_browsing_flagged"] is False
+    assert body["data"]["risk_score"] == 15
+    assert body["data"]["link_reputation"]["urlhaus_flagged"] is False
+    mock_gemini.assert_awaited_once()
 
 
-@patch("app.api.v1.endpoints.analyze_link.analyze_with_gemini", new_callable=AsyncMock)
-@patch("app.api.v1.endpoints.analyze_link.check_url_reputation", new_callable=AsyncMock)
-@patch("app.api.v1.endpoints.analyze_link.run_link_heuristics", new_callable=AsyncMock)
-def test_analyze_link_flagged_by_safe_browsing_forces_high_risk(
-    mock_heuristics, mock_reputation, mock_gemini
+@patch("app.api.v1.endpoints.analyze_link.analyze_gemini", new_callable=AsyncMock)
+@patch("app.api.v1.endpoints.analyze_link.check_urlhaus", new_callable=AsyncMock)
+@patch("app.api.v1.endpoints.analyze_link.check_heuristics")
+@patch("app.api.v1.endpoints.analyze_link.expand_short_link", new_callable=AsyncMock)
+def test_analyze_link_urlhaus_hit_skips_gemini(
+    mock_expand, mock_heuristics, mock_urlhaus, mock_gemini
 ):
-    mock_heuristics.return_value = {"resolved_url": "https://phishing-bca-login.xyz", "flags": [
-        "Menggunakan TLD yang sering disalahgunakan untuk phishing (.xyz)"
-    ]}
-    mock_reputation.return_value = {
-        "is_flagged": True,
-        "threat_types": ["SOCIAL_ENGINEERING"],
-        "verdict": "BERBAHAYA — terdeteksi di Google Safe Browsing.",
+    mock_expand.return_value = "https://phishing-bca-login.xyz"
+    mock_heuristics.return_value = {
+        "flags": ["Domain mengandung banyak tanda hubung, pola umum domain phishing"],
+        "domain": "phishing-bca-login.xyz",
     }
-    # LLM sengaja mengembalikan skor rendah untuk memastikan force_high_risk yang menang
-    mock_gemini.return_value = {
-        "risk_score": 20,
-        "risk_level": "low",
-        "explanation": "x",
-        "recommendation": "ignore",
-    }
+    mock_urlhaus.return_value = True
 
     response = client.post(
         "/api/v1/analyze/link", json={"url": "http://phishing-bca-login.xyz"}
@@ -66,8 +55,9 @@ def test_analyze_link_flagged_by_safe_browsing_forces_high_risk(
     assert response.status_code == 200
     body = response.json()
     assert body["data"]["risk_level"] == "high"
-    assert body["data"]["risk_score"] >= 85
-    assert body["data"]["link_reputation"]["safe_browsing_flagged"] is True
+    assert body["data"]["risk_score"] == 95
+    assert body["data"]["link_reputation"]["urlhaus_flagged"] is True
+    mock_gemini.assert_not_awaited()
 
 
 def test_analyze_link_invalid_url_returns_422():
