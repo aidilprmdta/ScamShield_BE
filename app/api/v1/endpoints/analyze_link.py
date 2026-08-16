@@ -1,19 +1,14 @@
-"""
-POST /api/v1/analyze/link
-Cek keamanan URL: Safe Browsing API + custom heuristik (shortlink/domain) + LLM.
-Mengikuti alur end-to-end pada PRD §13.
-"""
+"""POST /api/v1/analyze/link — expand → heuristik → URLhaus → Gemini."""
 from typing import Optional
 
 from fastapi import APIRouter, Depends
 
 from app.core.security import get_optional_user
 from app.models.analyze_schema import AnalyzeLinkRequest, AnalyzeResponse, ScanType
-from app.services.ai_engine.gemini_client import analyze_with_gemini
-from app.services.ai_engine.prompt_templates import build_link_prompt
+from app.services.ai_engine.gemini_client import analyze_gemini
 from app.services.analysis_persist import persist_analysis_result
-from app.services.link_check.custom_rules import run_link_heuristics
-from app.services.link_check.safe_browsing_client import check_url_reputation
+from app.services.link_check.custom_rules import check_heuristics, expand_short_link
+from app.services.link_check.urlhaus_client import URLHAUS_HIT_RESULT, check_urlhaus
 from app.services.risk_engine.risk_scorer import build_analysis_result
 from app.utils.validators import normalize_url
 
@@ -26,42 +21,34 @@ async def analyze_link(
     user_id: Optional[str] = Depends(get_optional_user),
 ) -> AnalyzeResponse:
     url = normalize_url(payload.url)
+    resolved_url = await expand_short_link(url)
+    flags = check_heuristics(resolved_url)["flags"]
+    urlhaus_hit = await check_urlhaus(resolved_url)
 
-    # 1. Custom logic: expand shortlink + heuristik domain
-    heuristics = await run_link_heuristics(url)
-    resolved_url = heuristics["resolved_url"]
-
-    # 2. Google Safe Browsing
-    reputation = await check_url_reputation(resolved_url)
-
-    # 3. Kirim konteks gabungan ke LLM untuk analisis & penjelasan
-    prompt = build_link_prompt(
-        url=resolved_url,
-        context_text=payload.context_text,
-        safe_browsing_verdict=reputation["verdict"],
-        custom_rule_flags=heuristics["flags"],
-    )
-    llm_result = await analyze_with_gemini(prompt)
-
-    link_reputation = {
-        "original_url": url,
-        "resolved_url": resolved_url,
-        "safe_browsing_flagged": reputation["is_flagged"],
-        "safe_browsing_threat_types": reputation["threat_types"],
-        "heuristic_flags": heuristics["flags"],
-    }
+    if urlhaus_hit:
+        llm_result = URLHAUS_HIT_RESULT
+    else:
+        llm_result = await analyze_gemini(
+            resolved_url,
+            flags,
+            context_text=payload.context_text,
+        )
 
     result = build_analysis_result(
         scan_type=ScanType.LINK,
         input_summary=url,
         llm_result=llm_result,
-        link_reputation=link_reputation,
-        force_high_risk=reputation["is_flagged"],
+        link_reputation={
+            "original_url": url,
+            "resolved_url": resolved_url,
+            "urlhaus_flagged": urlhaus_hit,
+            "heuristic_flags": flags,
+        },
+        force_high_risk=urlhaus_hit,
     )
     result = await persist_analysis_result(
         user_id,
         result,
         high_risk_title="Tautan berisiko tinggi",
     )
-
     return AnalyzeResponse(data=result)
