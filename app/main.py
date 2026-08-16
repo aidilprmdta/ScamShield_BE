@@ -33,7 +33,7 @@ def create_app() -> FastAPI:
         title="ScamShield AI — Backend API",
         description=(
             "REST API untuk orkestrasi AI Analysis (Gemini), pengecekan tautan "
-            "(Google Safe Browsing + custom logic), riwayat deteksi, pelaporan "
+            "(heuristik + URLhaus + Gemini), riwayat deteksi, pelaporan "
             "komunitas, dan konten edukasi literasi digital."
         ),
         version="1.0.0",
