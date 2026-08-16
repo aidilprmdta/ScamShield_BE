@@ -11,7 +11,11 @@ MIN_OCR_CONFIDENCE = 0.4
 
 _URL_REGEX = re.compile(
     r"^(https?://)?"
-    r"([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}"
+    r"("
+    r"([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}"  # domain biasa
+    r"|"
+    r"\d{1,3}(\.\d{1,3}){3}"  # IPv4 mentah
+    r")"
     r"(:\d+)?"
     r"(/[^\s]*)?$"
 )
