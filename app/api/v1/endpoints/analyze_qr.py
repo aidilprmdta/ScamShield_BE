@@ -1,21 +1,15 @@
-"""
-POST /api/v1/analyze/qr
-Analisis hasil decode QR code (dari com.google.mlkit:barcode-scanning + CameraX di client).
-Jika hasil decode berupa URL -> dijalankan pipeline sama seperti analyze/link (Safe Browsing
-+ custom rules). Jika berupa teks biasa -> dianalisis langsung sebagai konten.
-Sesuai PRD §13.
-"""
+"""POST /api/v1/analyze/qr — URL: pipeline link; teks: Gemini chat prompt."""
 from typing import Optional
 
 from fastapi import APIRouter, Depends
 
 from app.core.security import get_optional_user
 from app.models.analyze_schema import AnalyzeQrRequest, AnalyzeResponse, ScanType
-from app.services.ai_engine.gemini_client import analyze_with_gemini
-from app.services.ai_engine.prompt_templates import build_link_prompt, build_qr_prompt
+from app.services.ai_engine.gemini_client import analyze_gemini, analyze_with_gemini
+from app.services.ai_engine.prompt_templates import build_qr_prompt
 from app.services.analysis_persist import persist_analysis_result
-from app.services.link_check.custom_rules import run_link_heuristics
-from app.services.link_check.safe_browsing_client import check_url_reputation
+from app.services.link_check.custom_rules import check_heuristics, expand_short_link
+from app.services.link_check.urlhaus_client import URLHAUS_HIT_RESULT, check_urlhaus
 from app.services.risk_engine.risk_scorer import build_analysis_result
 from app.utils.validators import looks_like_url, normalize_url
 
@@ -28,35 +22,30 @@ async def analyze_qr(
     user_id: Optional[str] = Depends(get_optional_user),
 ) -> AnalyzeResponse:
     decoded = payload.decoded_content.strip()
-    is_url = looks_like_url(decoded)
-
     link_reputation = None
     force_high_risk = False
 
-    if is_url:
+    if looks_like_url(decoded):
         url = normalize_url(decoded)
-        heuristics = await run_link_heuristics(url)
-        resolved_url = heuristics["resolved_url"]
-        reputation = await check_url_reputation(resolved_url)
-        force_high_risk = reputation["is_flagged"]
-
+        resolved_url = await expand_short_link(url)
+        flags = check_heuristics(resolved_url)["flags"]
+        urlhaus_hit = await check_urlhaus(resolved_url)
+        force_high_risk = urlhaus_hit
         link_reputation = {
             "original_url": url,
             "resolved_url": resolved_url,
-            "safe_browsing_flagged": reputation["is_flagged"],
-            "safe_browsing_threat_types": reputation["threat_types"],
-            "heuristic_flags": heuristics["flags"],
+            "urlhaus_flagged": urlhaus_hit,
+            "heuristic_flags": flags,
         }
-        prompt = build_link_prompt(
-            url=resolved_url,
-            context_text="Tautan ini berasal dari hasil pindai QR code.",
-            safe_browsing_verdict=reputation["verdict"],
-            custom_rule_flags=heuristics["flags"],
+        llm_result = (
+            URLHAUS_HIT_RESULT
+            if urlhaus_hit
+            else await analyze_gemini(resolved_url, flags)
         )
     else:
-        prompt = build_qr_prompt(decoded_content=decoded, is_url=False)
-
-    llm_result = await analyze_with_gemini(prompt)
+        llm_result = await analyze_with_gemini(
+            build_qr_prompt(decoded_content=decoded, is_url=False)
+        )
 
     result = build_analysis_result(
         scan_type=ScanType.QR,
@@ -70,5 +59,4 @@ async def analyze_qr(
         result,
         high_risk_title="QR berisiko tinggi",
     )
-
     return AnalyzeResponse(data=result)
