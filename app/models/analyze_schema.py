@@ -75,7 +75,7 @@ class AnalysisResult(BaseModel):
         description="Kategori modus terdeteksi, dipakai FE untuk tombol 'Pelajari lebih lanjut'",
     )
     link_reputation: Optional[dict] = Field(
-        default=None, description="Detail hasil Safe Browsing + custom rules (khusus type=link/qr)"
+        default=None, description="Detail hasil URLhaus + heuristik (khusus type=link/qr)"
     )
     created_at: str
 
