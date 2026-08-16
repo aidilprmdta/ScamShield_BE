@@ -1,5 +1,5 @@
 """
-Gabungkan hasil LLM (Gemini) dan/atau hasil link check (Safe Browsing + custom rules)
+Gabungkan hasil LLM (Gemini) dan/atau hasil link check (URLhaus + heuristik)
 menjadi objek AnalysisResult final yang konsisten dengan schema.
 """
 from datetime import datetime, timezone
@@ -12,9 +12,6 @@ from app.models.analyze_schema import (
     RiskLevel,
     ScanType,
 )
-from app.core.logging import get_logger
-
-logger = get_logger(__name__)
 
 _VALID_RISK_LEVELS = {r.value for r in RiskLevel}
 _VALID_RECOMMENDATIONS = {r.value for r in RecommendedAction}
@@ -34,6 +31,13 @@ def _level_from_score(score: int) -> RiskLevel:
     if score >= 34:
         return RiskLevel.MEDIUM
     return RiskLevel.LOW
+
+
+def _pick(data: dict[str, Any], *keys: str, default: Any = None) -> Any:
+    for key in keys:
+        if key in data and data[key] is not None:
+            return data[key]
+    return default
 
 
 def _safe_risk_level(raw: Any, score: int) -> RiskLevel:
@@ -64,36 +68,47 @@ def build_analysis_result(
     Args:
         scan_type: tipe scan (chat/screenshot/link/qr)
         input_summary: cuplikan input yang dianalisis (untuk ditampilkan/disimpan)
-        llm_result: dict hasil parsing JSON dari Gemini
-        link_reputation: hasil gabungan Safe Browsing + custom rules (khusus link/qr)
-        force_high_risk: paksa risk_level=high (mis. saat Safe Browsing menandai berbahaya)
+        llm_result: dict hasil parsing JSON dari Gemini (snake_case atau camelCase)
+        link_reputation: hasil gabungan URLhaus + heuristik (khusus link/qr)
+        force_high_risk: paksa risk_level=high (mis. saat URLhaus menandai berbahaya)
     """
-    score = _clamp_score(llm_result.get("risk_score"))
+    score = _clamp_score(_pick(llm_result, "risk_score", "riskScore", default=50))
     if force_high_risk:
-        score = max(score, 85)
+        score = max(score, 95)
 
-    level = _safe_risk_level(llm_result.get("risk_level"), score)
+    level = _safe_risk_level(
+        _pick(llm_result, "risk_level", "riskLevel"),
+        score,
+    )
     if force_high_risk:
         level = RiskLevel.HIGH
 
-    # Saat force_high_risk (mis. Safe Browsing menandai berbahaya), rekomendasi LLM
-    # yang lama (dihasilkan sebelum override) tidak lagi relevan -> pakai default level.
     if force_high_risk:
         recommendation = _safe_recommendation(None, level)
     else:
-        recommendation = _safe_recommendation(llm_result.get("recommendation"), level)
+        recommendation = _safe_recommendation(
+            _pick(llm_result, "recommendation"),
+            level,
+        )
 
     explanation = str(
-        llm_result.get("explanation")
+        _pick(llm_result, "explanation")
         or "Tidak ada penjelasan spesifik dari mesin analisis."
     ).strip()
 
-    recommendation_text = str(
-        llm_result.get("recommendation_text")
-        or _default_recommendation_text(recommendation)
-    ).strip()
+    # analyze_gemini mengembalikan recommendation sebagai saran teks (ID);
+    # chat/screenshot memakai recommendation_text terpisah + enum recommendation.
+    raw_rec = _pick(llm_result, "recommendation")
+    raw_rec_text = _pick(llm_result, "recommendation_text")
+    if isinstance(raw_rec, str) and raw_rec.lower() not in _VALID_RECOMMENDATIONS:
+        recommendation_text = raw_rec.strip() or _default_recommendation_text(recommendation)
+        recommendation = _safe_recommendation(None, level)
+    else:
+        recommendation_text = str(
+            raw_rec_text or _default_recommendation_text(recommendation)
+        ).strip()
 
-    raw_flags = llm_result.get("red_flags") or []
+    raw_flags = _pick(llm_result, "red_flags", "redFlags") or []
     red_flags: list[RedFlag] = []
     for item in raw_flags:
         if isinstance(item, dict) and item.get("label"):
@@ -101,7 +116,7 @@ def build_analysis_result(
                 RedFlag(label=str(item["label"]), detail=str(item.get("detail", "")))
             )
 
-    category = llm_result.get("category")
+    category = _pick(llm_result, "category")
     category = str(category).strip() if category and str(category).lower() != "null" else None
 
     return AnalysisResult(
@@ -113,7 +128,6 @@ def build_analysis_result(
         red_flags=red_flags,
         recommendation=recommendation,
         recommendation_text=recommendation_text,
-        # Hanya tampilkan "Pelajari lebih lanjut" bila ada indikasi risiko / kategori modus
         related_education_category=category if level != RiskLevel.LOW else None,
         link_reputation=link_reputation,
         created_at=datetime.now(timezone.utc).isoformat(),
