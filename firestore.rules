@@ -1,7 +1,7 @@
 rules_version = '2';
 
 // Firestore Security Rules — ScamShield AI
-// Sesuai struktur koleksi PRD §16. Deploy dengan:
+// Deploy dengan:
 //   firebase deploy --only firestore:rules
 //
 // Prinsip:
