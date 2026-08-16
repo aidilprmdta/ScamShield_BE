@@ -3,8 +3,8 @@ Template prompt untuk Gemini API — deteksi penipuan digital & penjelasan.
 
 Prinsip desain prompt:
 - Selalu minta output JSON terstruktur (memudahkan parsing & konsisten dengan schema Pydantic).
-- Bahasa penjelasan harus sederhana, non-teknis (target: pengguna awam/lansia, lihat PRD §4, §9).
-- Sertakan kategori modus agar FE bisa arahkan ke konten Edukasi terkait (PRD §5 poin 9).
+- Bahasa penjelasan harus sederhana, non-teknis (target: pengguna awam/lansia).
+- Sertakan kategori modus agar FE bisa arahkan ke konten Edukasi terkait.
 """
 
 SYSTEM_INSTRUCTION = """\
@@ -50,26 +50,48 @@ def build_chat_prompt(text: str, source: str | None = None) -> str:
     )
 
 
+LINK_ANALYSIS_SYSTEM = """\
+Kamu adalah mesin analisis anti-penipuan digital bernama ScamShield AI.
+Tugasmu: menilai risiko keamanan sebuah URL berdasarkan URL itu sendiri dan
+hasil pengecekan heuristik domain.
+
+ATURAN OUTPUT:
+- Balas HANYA dengan JSON valid, tanpa teks lain, tanpa markdown code fence.
+- Struktur JSON WAJIB (camelCase):
+{
+  "riskScore": <integer 0-100>,
+  "riskLevel": "low" | "medium" | "high",
+  "explanation": "<alasan singkat dalam bahasa Indonesia>",
+  "recommendation": "<saran tindakan konkret dalam bahasa Indonesia>"
+}
+
+PANDUAN PENILAIAN:
+- riskScore 0-33 -> riskLevel "low"
+- riskScore 34-66 -> riskLevel "medium"
+- riskScore 67-100 -> riskLevel "high"
+- Domain berupa IP mentah atau banyak tanda hubung (-) biasanya lebih berisiko.
+- Jangan mengarang fakta di luar data yang diberikan.
+- Gunakan bahasa Indonesia sederhana, mudah dipahami pengguna awam.
+"""
+
+
 def build_link_prompt(
     url: str,
-    context_text: str | None,
-    safe_browsing_verdict: str,
-    custom_rule_flags: list[str],
+    heuristic_flags: list[str],
+    context_text: str | None = None,
 ) -> str:
     context_line = f"Konteks pesan pengantar tautan: {context_text}\n" if context_text else ""
     flags_line = (
-        f"Indikator heuristik domain: {', '.join(custom_rule_flags)}\n"
-        if custom_rule_flags
-        else "Indikator heuristik domain: tidak ada kejanggalan terdeteksi\n"
+        f"Hasil heuristik domain: {', '.join(heuristic_flags)}\n"
+        if heuristic_flags
+        else "Hasil heuristik domain: tidak ada kejanggalan terdeteksi\n"
     )
     return (
         f"Analisis keamanan tautan berikut:\n"
         f"URL: {url}\n"
-        f"Hasil pengecekan Google Safe Browsing: {safe_browsing_verdict}\n"
         f"{flags_line}"
         f"{context_line}"
-        f"Gabungkan seluruh informasi di atas dan balas sesuai format JSON yang ditentukan "
-        f"pada instruksi sistem. Jika Safe Browsing menandai berbahaya, risk_score WAJIB tinggi (>=80)."
+        f"Balas sesuai format JSON camelCase yang ditentukan pada instruksi sistem."
     )
 
 
