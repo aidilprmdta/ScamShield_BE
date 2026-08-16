@@ -35,12 +35,12 @@ def test_build_analysis_result_clamps_invalid_score():
     assert result.recommendation == RecommendedAction.BLOCK
 
 
-def test_build_analysis_result_force_high_risk_from_safe_browsing():
+def test_build_analysis_result_force_high_risk_from_urlhaus():
     llm_result = {
-        "risk_score": 20,
-        "risk_level": "low",
-        "explanation": "Tampak biasa saja.",
-        "recommendation": "ignore",
+        "riskScore": 95,
+        "riskLevel": "high",
+        "explanation": "Terdaftar di URLhaus.",
+        "recommendation": "Jangan buka tautan ini.",
     }
     result = build_analysis_result(
         scan_type=ScanType.LINK,
@@ -49,8 +49,9 @@ def test_build_analysis_result_force_high_risk_from_safe_browsing():
         force_high_risk=True,
     )
     assert result.risk_level == RiskLevel.HIGH
-    assert result.risk_score >= 85
+    assert result.risk_score >= 95
     assert result.recommendation == RecommendedAction.BLOCK
+    assert "Jangan buka" in result.recommendation_text
 
 
 def test_red_flags_parsing_ignores_malformed_items():
