@@ -1,4 +1,4 @@
-"""POST /api/v1/analyze/link — expand → heuristik → URLhaus → Gemini."""
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends
@@ -21,9 +21,14 @@ async def analyze_link(
     user_id: Optional[str] = Depends(get_optional_user),
 ) -> AnalyzeResponse:
     url = normalize_url(payload.url)
-    resolved_url = await expand_short_link(url)
+    resolved_url, urlhaus_hit = await asyncio.gather(
+        expand_short_link(url),
+        check_urlhaus(url),
+    )
+    if resolved_url != url and not urlhaus_hit:
+        urlhaus_hit = await check_urlhaus(resolved_url)
+
     flags = check_heuristics(resolved_url)["flags"]
-    urlhaus_hit = await check_urlhaus(resolved_url)
 
     if urlhaus_hit:
         llm_result = URLHAUS_HIT_RESULT
