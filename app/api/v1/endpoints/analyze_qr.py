@@ -1,4 +1,4 @@
-"""POST /api/v1/analyze/qr — URL: pipeline link; teks: Gemini chat prompt."""
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends
@@ -27,9 +27,14 @@ async def analyze_qr(
 
     if looks_like_url(decoded):
         url = normalize_url(decoded)
-        resolved_url = await expand_short_link(url)
+        resolved_url, urlhaus_hit = await asyncio.gather(
+            expand_short_link(url),
+            check_urlhaus(url),
+        )
+        if resolved_url != url and not urlhaus_hit:
+            urlhaus_hit = await check_urlhaus(resolved_url)
+
         flags = check_heuristics(resolved_url)["flags"]
-        urlhaus_hit = await check_urlhaus(resolved_url)
         force_high_risk = urlhaus_hit
         link_reputation = {
             "original_url": url,
