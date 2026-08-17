@@ -17,20 +17,31 @@ def _domain(url: str) -> str:
     return (urlparse(url).netloc or "").lower().split(":")[0]
 
 
+_KNOWN_SHORTENERS = {
+    "bit.ly", "tinyurl.com", "t.co", "s.id", "cutt.ly", "is.gd",
+    "rb.gy", "shorturl.at", "linktr.ee", "ow.ly", "buff.ly", "goo.gl"
+}
+
 async def expand_short_link(url: str) -> str:
-    """Follow redirect via httpx. Return URL asal jika gagal."""
-    settings = get_settings()
+    """Follow redirect via httpx. Timeout singkat 2.5 detik agar tidak menunda analisis."""
+    parsed = urlparse(url)
+    domain = (parsed.netloc or "").lower().split(":")[0].removeprefix("www.")
+    
+    # Hanya expand jika berpotensi shortener atau memiliki path redirect
+    is_likely_short = domain in _KNOWN_SHORTENERS or len(domain) <= 8
+    timeout_sec = 2.5 if is_likely_short else 1.5
+
     try:
         async with httpx.AsyncClient(
-            timeout=settings.http_timeout_seconds,
+            timeout=timeout_sec,
             follow_redirects=True,
         ) as client:
             resp = await client.head(url)
-            if resp.status_code >= 400:
+            if resp.status_code >= 400 and is_likely_short:
                 resp = await client.get(url)
             return str(resp.url)
-    except httpx.HTTPError as exc:
-        logger.warning("Gagal expand %s: %s", url, exc)
+    except (httpx.HTTPError, Exception) as exc:
+        logger.debug("Skip/gagal expand %s: %s", url, exc)
         return url
 
 
