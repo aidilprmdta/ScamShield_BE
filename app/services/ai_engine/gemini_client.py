@@ -50,7 +50,7 @@ def _get_model() -> genai.GenerativeModel:
             generation_config={
                 "response_mime_type": "application/json",
                 "temperature": 0.2,
-                "max_output_tokens": 1024,
+                "max_output_tokens": 512,
             },
         )
     return _model
@@ -67,7 +67,7 @@ def _get_link_model() -> genai.GenerativeModel:
             generation_config={
                 "response_mime_type": "application/json",
                 "temperature": 0.2,
-                "max_output_tokens": 512,
+                "max_output_tokens": 384,
             },
         )
     return _link_model
@@ -154,8 +154,8 @@ async def analyze_gemini(
 
 @retry(
     reraise=True,
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=8),
+    stop=stop_after_attempt(2),
+    wait=wait_exponential(multiplier=0.5, min=0.5, max=2),
     retry=retry_if_exception_type(UpstreamServiceError),
 )
 async def _call_gemini(
