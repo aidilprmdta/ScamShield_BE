@@ -24,15 +24,14 @@ URLHAUS_HIT_RESULT = {
 
 
 async def check_urlhaus(url: str) -> bool:
-    """POST ke URLhaus. True jika query_status == 'ok'. Fail-open → False."""
-    settings = get_settings()
+    """POST ke URLhaus. True jika query_status == 'ok'. Fail-open → False. Timeout 2.5s."""
     try:
-        async with httpx.AsyncClient(timeout=settings.http_timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=2.5) as client:
             resp = await client.post(URLHAUS_ENDPOINT, data={"url": url})
             resp.raise_for_status()
             data: dict[str, Any] = resp.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        logger.warning("URLhaus gagal (%s): %s", url, exc)
+    except (httpx.HTTPError, ValueError, Exception) as exc:
+        logger.debug("URLhaus skip/gagal (%s): %s", url, exc)
         return False
 
     return str(data.get("query_status", "")).lower() == "ok"
