@@ -13,7 +13,7 @@ FastAPI API untuk analisis chat, link (heuristik + URLhaus + Gemini), QR, auth F
 ```bash
 cd ScamShield_BE
 python -m venv venv
-venv\Scripts\activate          # macOS/Linux: source venv/bin/activate
+venv\Scripts\Activate.ps1          # macOS/Linux: source venv/bin/activate
 pip install -r requirements.txt
 copy .env.example .env         # macOS/Linux: cp .env.example .env
 ```
