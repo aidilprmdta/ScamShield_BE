@@ -11,7 +11,7 @@ FastAPI API untuk analisis chat, link (heuristik + URLhaus + Gemini), QR, auth F
 ## Install
 
 ```bash
-cd scamshield_backend
+cd ScamShield_BE
 python -m venv venv
 venv\Scripts\activate          # macOS/Linux: source venv/bin/activate
 pip install -r requirements.txt
